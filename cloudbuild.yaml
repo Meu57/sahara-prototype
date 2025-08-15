@@ -1,3 +1,14 @@
+# cloudbuild.yaml (Final, Definitive Version for Testing)
+
 steps:
-  - name: 'gcr.io/cloud-builders/gcloud'
-    args: ['echo', 'Hello World']
+# This step uses the simple and reliable 'ubuntu' builder to print a message.
+- name: 'ubuntu'
+  args: ['echo', 'CI/CD Pipeline connection is working!']
+
+# This step uses the gcloud builder to run a valid gcloud command.
+- name: 'gcr.io/cloud-builders/gcloud'
+  args: ['--version']
+
+# This is the critical fix for the permission error we discovered.
+options:
+  logging: CLOUD_LOGGING_ONLY
