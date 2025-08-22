@@ -10,8 +10,6 @@ steps:
   id: 'Deploy'
   entrypoint: 'gcloud'
   args: [ 'run', 'deploy', 'sahara-backend-service', '--image=asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:${SHORT_SHA}', '--region=asia-south1', '--service-account=sahara-app-backend-sa@${PROJECT_ID}.iam.gserviceaccount.com', '--allow-unauthenticated' ]
-
-# NEW FINAL STEP, RUNS REGARDLESS OF BUILD SUCCESS
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   id: 'Clean Images'
   entrypoint: 'bash'
