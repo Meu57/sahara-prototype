@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:sahara_app/models/action_item.dart';
 import 'package:sahara_app/models/chat_message.dart';
-import 'package:sahara_app/widgets/chat_bubble.dart';
-import 'package:sahara_app/services/database_service.dart';
 import 'package:sahara_app/services/api_service.dart';
+import 'package:sahara_app/services/database_service.dart';
+import 'package:sahara_app/widgets/chat_bubble.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
-
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
@@ -17,12 +16,18 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   bool _isAasthaTyping = false;
   bool _canSendMessage = false;
-
   final List<ChatMessage> _messages = [];
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _addMessageToList(ChatMessage(
+        text: 'Welcome to Sahara. How are you feeling today?',
+        isUser: false,
+      ));
+    });
+
     _controller.addListener(() {
       setState(() {
         _canSendMessage = _controller.text.trim().isNotEmpty;
@@ -36,76 +41,87 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  // --- THIS IS THE NEW LIVE LOGIC ---
   void _sendMessage() {
     if (_controller.text.trim().isEmpty) return;
+    final userMessage = ChatMessage(
+      text: _controller.text.trim(),
+      isUser: true,
+    );
 
-    final userMessage = ChatMessage(text: _controller.text.trim(), isUser: true);
-
-    setState(() {
-      _messages.insert(0, userMessage);
-      _listKey.currentState?.insertItem(0, duration: const Duration(milliseconds: 600));
-      _isAasthaTyping = true;
-    });
+    setState(() => _isAasthaTyping = true);
+    _addMessageToList(userMessage);
 
     final textToSend = _controller.text.trim();
     _controller.clear();
-
     _getLiveAasthaResponse(textToSend);
   }
 
   Future<void> _getLiveAasthaResponse(String message) async {
-    final String replyText = await ApiService.sendMessage(message);
+    final replyText = await ApiService.sendMessage(message);
+    if (!mounted) return;
 
-    final aasthaResponse = ChatMessage(text: replyText, isUser: false);
+    setState(() => _isAasthaTyping = false);
+    _addMessageToList(ChatMessage(text: replyText, isUser: false));
 
-    if (mounted) {
-      setState(() {
-        _messages.insert(0, aasthaResponse);
-        _listKey.currentState?.insertItem(0, duration: const Duration(milliseconds: 600));
-        _isAasthaTyping = false;
-      });
-    }
+    await Future.delayed(const Duration(milliseconds: 1200));
+    if (!mounted) return;
+    _proposeJourneyAction();
+  }
 
-    // Optional: Add contextual suggestion after AI reply
-    final suggestedTitle = 'Try a 5-minute breathing exercise';
-    final bool alreadyExists = await DatabaseService.instance.doesActionItemExist(suggestedTitle);
+  Future<void> _proposeJourneyAction() async {
+    const suggestedTitle = 'Try a 5-minute breathing exercise';
+    final alreadyExists = await DatabaseService.instance.doesActionItemExist(suggestedTitle);
 
-    if (!alreadyExists) {
-      final suggestionItem = ActionItem(
+    if (!alreadyExists && mounted) {
+      final suggestion = ActionItem(
         title: suggestedTitle,
         description: 'Find this in the Resource Library.',
         dateAdded: DateTime.now(),
       );
-      final suggestionMessage = ChatMessage(
+
+      _addMessageToList(ChatMessage(
         text: 'I noticed we are talking about feeling stressed. Sometimes a short breathing exercise can help. Would you like me to add one to your Journey?',
         isUser: false,
-        suggestion: suggestionItem,
-      );
-      _addAasthaResponse(null, suggestionMessage: suggestionMessage);
+        suggestion: suggestion,
+      ));
     }
   }
 
-  void _addAasthaResponse(String? text, {ChatMessage? suggestionMessage}) {
-    final response = suggestionMessage ?? ChatMessage(text: text!, isUser: false);
-
+  void _addMessageToList(ChatMessage message) {
     if (mounted) {
-      setState(() {
-        _messages.insert(0, response);
-        _listKey.currentState?.insertItem(0, duration: const Duration(milliseconds: 600));
-        _isAasthaTyping = false;
-      });
+      _messages.insert(0, message);
+      _listKey.currentState?.insertItem(0, duration: const Duration(milliseconds: 500));
     }
+  }
+
+  void _showConfirmationSnackbar(String message) {
+    final theme = Theme.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message, style: const TextStyle(color: Colors.black87)),
+        backgroundColor: theme.colorScheme.secondary,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)),
+        margin: const EdgeInsets.all(10.0),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   Widget _buildItem(BuildContext context, int index, Animation<double> animation) {
     final message = _messages[index];
-    return SizeTransition(
-      sizeFactor: animation,
-      child: ChatBubble(
-        text: message.text,
-        isUser: message.isUser,
-        suggestion: message.suggestion,
+    final curvedAnimation = CurvedAnimation(parent: animation, curve: Curves.easeOutQuart);
+
+    return FadeTransition(
+      opacity: curvedAnimation,
+      child: SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0, 0.5), end: Offset.zero).animate(curvedAnimation),
+        child: ChatBubble(
+          text: message.text,
+          isUser: message.isUser,
+          suggestion: message.suggestion,
+          onSuggestionAccepted: _showConfirmationSnackbar,
+        ),
       ),
     );
   }
@@ -124,11 +140,14 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
         if (_isAasthaTyping)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 12.0),
-            child: Text(
-              'Aastha is typing...',
-              style: TextStyle(fontStyle: FontStyle.italic),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12.0),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Aastha is typing...',
+                style: TextStyle(color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+              ),
             ),
           ),
         Container(
@@ -149,7 +168,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                     contentPadding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 10.0),
                   ),
-                  onSubmitted: (value) {
+                  onSubmitted: (_) {
                     if (_canSendMessage) _sendMessage();
                   },
                 ),
@@ -158,7 +177,7 @@ class _ChatScreenState extends State<ChatScreen> {
               AnimatedSwitcher(
                 duration: const Duration(milliseconds: 200),
                 transitionBuilder: (child, animation) =>
-                    ScaleTransition(scale: animation, child: child),
+                    ScaleTransition(child: child, scale: animation),
                 child: _canSendMessage
                     ? IconButton(
                         key: const ValueKey('send_button'),

@@ -44,7 +44,8 @@ class _JournalEntryScreenState extends State<JournalEntryScreen> {
   // --- NEW LIVE LOGIC ---
     print('Attempting to sync journal entry to the cloud...');
     final placeholderUserId = 'user_123';
-   ApiService.syncJournalEntry(placeholderUserId, newEntry.toMap());
+   ApiService.syncJournalEntry(placeholderUserId, newEntry);
+
     // Fire-and-forget: no await, no error handling for now
     // --- END OF NEW LOGIC ---
 

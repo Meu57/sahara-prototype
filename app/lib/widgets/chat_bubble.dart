@@ -9,12 +9,14 @@ class ChatBubble extends StatefulWidget {
   final String text;
   final bool isUser;
   final ActionItem? suggestion;
+    final void Function(String message)? onSuggestionAccepted;
 
   const ChatBubble({
     super.key,
     required this.text,
     required this.isUser,
     this.suggestion,
+     this.onSuggestionAccepted,
   });
 
   @override
