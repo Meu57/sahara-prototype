@@ -1,18 +1,69 @@
-# Flutter/Dart
+#============================================================
+# GENERAL / MISCELLANEOUS
+#============================================================
+*.class
+*.log
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+#============================================================
+# IDE & EDITOR FILES
+#============================================================
+*.iml
+*.ipr
+*.iws
+.idea/
+# It's good practice to keep .vscode settings for a consistent team dev environment
+# .vscode/
+
+#============================================================
+# FLUTTER / DART
+#============================================================
+# General Flutter/Dart files
 .dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
 .packages
 .pub-cache/
 build/
-*_web.version
+coverage/
+app.*.symbols
+app.*.map.json
+pubspec.lock # Often recommended to commit, but can be ignored for solo dev
 
-# Python
+# Old Flutter plugin files (good to keep)
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android specific build artifacts
+android/app/debug/
+android/app/profile/
+android/app/release/
+
+# iOS specific build artifacts (if applicable)
+ios/Flutter/.last_build_id
+
+#============================================================
+# PYTHON
+#============================================================
+# Virtual environment
 venv/
+# Bytecode files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Terraform
+#============================================================
+# TERRAFORM
+#============================================================
+# Ignore the downloaded provider plugins
 .terraform/
+# Ignore the state files, which can contain secrets
 *.tfstate
 *.tfstate.*
