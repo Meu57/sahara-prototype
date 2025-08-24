@@ -108,3 +108,11 @@ resource "google_cloud_run_v2_service_iam_member" "allow_public_access" {
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
+
+
+
+resource "google_service_account_iam_member" "cloudbuild_can_act_as_app_sa" {
+  service_account_id = google_service_account.sahara_app_sa.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:78116732933@cloudbuild.gserviceaccount.com" # The Cloud Build Worker
+}
