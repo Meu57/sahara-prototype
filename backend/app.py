@@ -4,9 +4,6 @@ from flask import Flask, request, jsonify
 from google.cloud import firestore
 from google.cloud import secretmanager
 from huggingface_hub import InferenceClient
-import traceback
-from flask import request, jsonify
-
 
 app = Flask(__name__)
 
@@ -58,7 +55,7 @@ if not STARTUP_ERROR and HF_TOKEN:
 if STARTUP_ERROR:
     print(f"❌❌❌ FATAL STARTUP ERROR ❌❌❌\n{STARTUP_ERROR}")
 
-# --- DIAGNOSTIC ENDPOINT ---
+# --- DIAGNOSTIC ENDPOINTS ---
 @app.route("/startup-status", methods=["GET"])
 def startup_status():
     return jsonify({
@@ -66,6 +63,17 @@ def startup_status():
         "STARTUP_ERROR": STARTUP_ERROR,
         "google_cloud_project_env": os.environ.get("GOOGLE_CLOUD_PROJECT"),
     })
+
+@app.route("/selftest", methods=["GET"])
+def selftest():
+    return jsonify({
+        "status": "ok",
+        "message": "Self-test passed",
+        "hf_ok": hf_inference_client is not None,
+        "firestore_ok": db is not None,
+        "startup_error": STARTUP_ERROR,
+        "ai_core_initialized": AI_CORE_INITIALIZED
+    }), 200
 
 # --- AASTHA PERSONA PROMPT ---
 AASTHA_PERSONA_PROMPT = """You are Aastha, a compassionate and warm mental wellness companion. Your goal is to make the user feel heard, validated, and safe. You must follow this three-step loop in your response:
@@ -87,12 +95,49 @@ def handle_chat():
 
     try:
         response_text = ""
-        for token in hf_inference_client.text_generation(prompt, model="HuggingFaceH4/zephyr-7b-beta", max_new_tokens=250, stream=True):
-            response_text += token
+
+        # Try streaming first
+        try:
+            for token in hf_inference_client.text_generation(prompt,
+                                                            model="HuggingFaceH4/zephyr-7b-beta",
+                                                            max_new_tokens=250,
+                                                            stream=True):
+                if isinstance(token, bytes):
+                    response_text += token.decode("utf-8", errors="ignore")
+                elif isinstance(token, str):
+                    response_text += token
+                elif isinstance(token, dict):
+                    response_text += token.get("generated_text") or token.get("text") or token.get("token") or ""
+                else:
+                    response_text += str(token)
+        except Exception as stream_exc:
+            print("STREAMING ERROR (falling back to non-stream). Exception:", stream_exc)
+            print(traceback.format_exc())
+
+            # Non-streaming fallback
+            resp = hf_inference_client.text_generation(prompt,
+                                                       model="HuggingFaceH4/zephyr-7b-beta",
+                                                       max_new_tokens=250,
+                                                       stream=False)
+            if isinstance(resp, dict):
+                response_text = resp.get("generated_text") or resp.get("text") or str(resp)
+            elif isinstance(resp, list):
+                parts = []
+                for item in resp:
+                    if isinstance(item, dict):
+                        parts.append(item.get("generated_text") or item.get("text") or str(item))
+                    else:
+                        parts.append(str(item))
+                response_text = "".join(parts)
+            else:
+                response_text = str(resp)
+
+        print(f"Generated response length={len(response_text)}. Sample:\n{response_text[:800]}")
         return jsonify({"reply": response_text})
     except Exception as e:
-        print(f"HF API error: {e}")
-        return jsonify({"reply": "I'm having a little trouble thinking right now. Please check back in a moment."})
+        tb = traceback.format_exc()
+        print(f"HF API error: {e}\nTRACEBACK:\n{tb}")
+        return jsonify({"reply": "I'm having a little trouble thinking right now. Please check back in a moment."}), 500
 
 # --- JOURNAL SYNC ENDPOINT ---
 @app.route("/journal/sync", methods=["POST"])
@@ -121,70 +166,6 @@ def get_resources():
     articles_ref = db.collection("articles")
     articles = [doc.to_dict() for doc in articles_ref.stream()]
     return jsonify(articles)
-
-# --- Robust /chat endpoint: streaming with safe fallback + detailed logs ---
-@app.route("/chat", methods=["POST"])
-def handle_chat():
-    if STARTUP_ERROR:
-        return jsonify({"reply": f"Server startup error: {STARTUP_ERROR}"}), 500
-    if not hf_inference_client:
-        return jsonify({"reply": "AI client is not available. Check startup logs."}), 503
-
-    user_message = request.json.get("message", "")
-    prompt = f"<|system|>\n{AASTHA_PERSONA_PROMPT}</s>\n<|user|>\n{user_message}</s>\n<|assistant|>"
-
-    try:
-        response_text = ""
-
-        # Try streaming first (but be defensive about token format)
-        try:
-            for token in hf_inference_client.text_generation(prompt,
-                                                            model="HuggingFaceH4/zephyr-7b-beta",
-                                                            max_new_tokens=250,
-                                                            stream=True):
-                # token might be str, bytes, dict, or other — handle common shapes
-                if isinstance(token, bytes):
-                    response_text += token.decode("utf-8", errors="ignore")
-                elif isinstance(token, str):
-                    response_text += token
-                elif isinstance(token, dict):
-                    # common keys: 'generated_text', 'text', 'token'
-                    response_text += token.get("generated_text") or token.get("text") or token.get("token") or ""
-                else:
-                    response_text += str(token)
-        except Exception as stream_exc:
-            # Log streaming failure and fall back to a single non-streaming call
-            print("STREAMING ERROR (falling back to non-stream). Exception:", stream_exc)
-            print(traceback.format_exc())
-
-            # Non-streaming fallback
-            resp = hf_inference_client.text_generation(prompt,
-                                                       model="HuggingFaceH4/zephyr-7b-beta",
-                                                       max_new_tokens=250,
-                                                       stream=False)
-            # resp might be dict, list, or other — extract text robustly
-            if isinstance(resp, dict):
-                # try top-level keys
-                response_text = resp.get("generated_text") or resp.get("text") or str(resp)
-            elif isinstance(resp, list):
-                parts = []
-                for item in resp:
-                    if isinstance(item, dict):
-                        parts.append(item.get("generated_text") or item.get("text") or str(item))
-                    else:
-                        parts.append(str(item))
-                response_text = "".join(parts)
-            else:
-                response_text = str(resp)
-
-        # Log short sample to help debug in logs
-        print(f"Generated response length={len(response_text)}. Sample:\n{response_text[:800]}")
-        return jsonify({"reply": response_text})
-    except Exception as e:
-        tb = traceback.format_exc()
-        print(f"HF API error: {e}\nTRACEBACK:\n{tb}")
-        # Return same fallback the app expects
-        return jsonify({"reply": "I'm having a little trouble thinking right now. Please check back in a moment."}), 500
 
 # --- ENTRY POINT ---
 if __name__ == "__main__":
