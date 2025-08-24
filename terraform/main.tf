@@ -38,30 +38,42 @@ resource "google_project_iam_member" "firestore_user_binding" {
 }
 
 # 4. Give the service account permission to write logs.
-#    This resolves the warning from our Cloud Build run and is a best practice.
 resource "google_project_iam_member" "logging_logwriter_binding" {
   project = "sahara-wellness-prototype"
   role    = "roles/logging.logWriter"
   member  = google_service_account.sahara_app_sa.member
 }
 
+# 5. Grant the role to VIEW secrets' metadata.
+resource "google_project_iam_member" "secret_manager_viewer_binding" {
+  project = "sahara-wellness-prototype"
+  role    = "roles/secretmanager.viewer"
+  member  = google_service_account.sahara_app_sa.member
+}
+
+# 6. Grant the role to ACCESS the actual value of secrets.
+resource "google_project_iam_member" "secret_manager_accessor_binding" {
+  project = "sahara-wellness-prototype"
+  role    = "roles/secretmanager.secretAccessor"
+  member  = google_service_account.sahara_app_sa.member
+}
+
 # --- Firestore Database ---
 
-# 1. This ensures the Firestore API is enabled before we try to create a database.
+# This ensures the Firestore API is enabled before we try to create a database.
 resource "google_project_service" "firestore" {
   project            = "sahara-wellness-prototype"
   service            = "firestore.googleapis.com"
-  disable_on_destroy = false # Prevents Terraform from disabling the API when this is destroyed.
+  disable_on_destroy = false
 }
 
-# 2. This creates the actual Firestore database instance.
+# This creates the actual Firestore database instance.
 resource "google_firestore_database" "database" {
   project     = "sahara-wellness-prototype"
-  name        = "(default)" # This is the standard name for the main database.
-  location_id = "asia-south1" # We will explicitly set the location.
+  name        = "(default)"
+  location_id = "asia-south1"
   type        = "FIRESTORE_NATIVE"
   
-  # This tells Terraform to wait until the API is enabled before trying to create the database.
   depends_on = [
     google_project_service.firestore
   ]
@@ -69,17 +81,17 @@ resource "google_firestore_database" "database" {
 
 # --- Cloud Run Service ---
 
-# 1. This ensures the Cloud Run API is enabled before we try to create a service.
+# This ensures the Cloud Run API is enabled before we try to create a service.
 resource "google_project_service" "cloudrun" {
   project            = "sahara-wellness-prototype"
   service            = "run.googleapis.com"
   disable_on_destroy = false
 }
 
-# 2. This creates the actual Cloud Run service.
+# This creates the actual Cloud Run service.
 resource "google_cloud_run_v2_service" "sahara_backend" {
   project  = "sahara-wellness-prototype"
-  name     = "sahara-backend-service" # This will be the name of our service.
+  name     = "sahara-backend-service"
   location = "asia-south1"
 
   template {
@@ -89,26 +101,17 @@ resource "google_cloud_run_v2_service" "sahara_backend" {
       image = "us-docker.pkg.dev/cloudrun/container/hello"
     }
   }
-
   
   depends_on = [
     google_project_service.cloudrun
   ]
 }
 
-# 3. This makes our Cloud Run service accessible from the public internet,
-
+# This makes our Cloud Run service accessible from the public internet.
 resource "google_cloud_run_v2_service_iam_member" "allow_public_access" {
-  project  = google_cloud_run_v2_service.sahara_backend.project
-  name     = google_cloud_run_v2_service.sahara_backend.name
-  location = google_cloud_run_v2_service.sahara_backend.location
+  project  = "sahara-wellness-prototype"
+  name     = "sahara-backend-service"
+  location = "asia-south1"
   role     = "roles/run.invoker"
-  member   = "allUsers" # Special value that means "anyone on the internet".
-}
-
-# Grant our service account the role to VIEW secrets, not just access their value.
-resource "google_project_iam_member" "secret_manager_viewer_binding" {
-  project = "sahara-wellness-prototype"
-  role    = "roles/secretmanager.viewer"
-  member  = google_service_account.sahara_app_sa.member
+  member   = "allUsers"
 }
