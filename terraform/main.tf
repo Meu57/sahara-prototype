@@ -105,3 +105,10 @@ resource "google_cloud_run_v2_service_iam_member" "allow_public_access" {
   role     = "roles/run.invoker"
   member   = "allUsers" # Special value that means "anyone on the internet".
 }
+
+# Grant our service account the role to VIEW secrets, not just access their value.
+resource "google_project_iam_member" "secret_manager_viewer_binding" {
+  project = "sahara-wellness-prototype"
+  role    = "roles/secretmanager.viewer"
+  member  = google_service_account.sahara_app_sa.member
+}
