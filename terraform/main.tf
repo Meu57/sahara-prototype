@@ -93,6 +93,17 @@ resource "google_cloud_run_v2_service" "sahara_backend" {
 
     containers {
       image = "us-docker.pkg.dev/cloudrun/container/hello"
+
+      # --- THIS IS THE FIX ---
+      # We are explicitly requesting more memory and CPU for our container.
+      # 1Gi is 1 Gibibyte (approx 1.07 GB), which should be enough for Gemini.
+      resources {
+        limits = {
+          "cpu"    = "1"
+          "memory" = "1Gi"
+        }
+      }
+      # --- END OF FIX ---
     }
   }
 
@@ -108,8 +119,6 @@ resource "google_cloud_run_v2_service_iam_member" "allow_public_access" {
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
-
-
 
 resource "google_service_account_iam_member" "cloudbuild_can_act_as_app_sa" {
   service_account_id = google_service_account.sahara_app_sa.name
