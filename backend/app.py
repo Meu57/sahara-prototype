@@ -64,6 +64,30 @@ def handle_chat():
         print(f"Error calling Vertex AI: {e}")
         return jsonify({"reply": "I'm having a little trouble thinking right now..."}), 500
 
+# ADD THIS ENTIRE FUNCTION TO YOUR APP.PY
+
+@app.route("/resources", methods=["GET"])
+def get_resources():
+    """Fetches the list of resource articles from Firestore."""
+    if not db:
+        return jsonify({"error": "Database service not available."}), 503
+    try:
+        print("Fetching articles from Firestore...")
+        articles_ref = db.collection('articles')
+        articles = []
+        for doc in articles_ref.stream():
+            article_data = doc.to_dict()
+            articles.append({
+                "title": article_data.get("title", ""),
+                "snippet": article_data.get("snippet", ""),
+                "content": article_data.get("content", "")
+            })
+        print(f"Found {len(articles)} articles.")
+        return jsonify(articles)
+    except Exception as e:
+        print(f"Error fetching from Firestore: {e}")
+        return jsonify({"error": "Could not fetch resources."}), 500
+
 # --- Local Testing ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
