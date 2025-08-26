@@ -2,35 +2,44 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:logger/logger.dart';
 import 'package:sahara_app/models/article.dart';
 import 'package:sahara_app/models/journal_entry.dart';
+import 'package:sahara_app/services/session_service.dart';
 
 class ApiService {
-  // ✅ LIVE Cloud Run endpoint
   static const String _baseUrl = 'https://sahara-backend-service-78116732933.asia-south1.run.app';
+  static final Logger _logger = Logger();
 
   // --- CHAT ENDPOINT ---
-  static Future<String> sendMessage(String message) async {
+  static Future<String> sendMessage(String message, {String? userId}) async {
     try {
+      final body = {
+        'message': message,
+        if (userId != null) 'userId': userId,
+      };
       final response = await http.post(
         Uri.parse('$_baseUrl/chat'),
-        headers: {
-          'Content-Type': 'application/json; charset=UTF-8',
-        },
-        body: jsonEncode({'message': message}),
-      ).timeout(const Duration(seconds: 15));
+        headers: {'Content-Type': 'application/json; charset=UTF-8'},
+        body: jsonEncode(body),
+      ).timeout(const Duration(seconds: 60)); // Increased timeout for AI
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body)['reply'];
+        final map = jsonDecode(response.body);
+        // If the server returns a new userId, persist it on the client
+        if (map['userId'] != null && map['userId'] is String) {
+          await SessionService.setUserId(map['userId']);
+        }
+        return map['reply'] ?? "Sorry, no reply was received from the server.";
       } else {
-        print('API Error: ${response.statusCode} - ${response.body}');
+        _logger.e('API Error: ${response.statusCode} - ${response.body}');
         return "Sorry, there was an error with the server.";
       }
     } on SocketException {
       return "Please check your internet connection.";
     } catch (e) {
-      print('Error sending message: $e');
-      return "Sorry, I'm having trouble connecting right now.";
+      _logger.e('Error sending message: $e');
+      return "Sorry, I am having trouble connecting right now.";
     }
   }
 
@@ -47,9 +56,9 @@ class ApiService {
           'entry': entry.toMap(),
         }),
       ).timeout(const Duration(seconds: 15));
-      print('Journal entry synced successfully.');
+      _logger.i('Journal entry synced successfully.');
     } catch (e) {
-      print('Error syncing journal entry: $e');
+      _logger.e('Error syncing journal entry: $e');
     }
   }
 
@@ -74,7 +83,7 @@ class ApiService {
         throw Exception('Failed to load resources. Status code: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error fetching resources: $e');
+      _logger.e('Error fetching resources: $e');
       return [];
     }
   }
