@@ -1,7 +1,8 @@
-# backend/app.py (Definitive V2 with Friends' Feedback)
+# backend/app.py (Final Version with Memory Summarization and Conversation Count)
 
 import os
 import datetime
+import threading
 import uuid
 from flask import Flask, request, jsonify
 from google.cloud import firestore
@@ -26,7 +27,7 @@ except Exception as e:
     model = None
     db = None
 
-# --- Governor (remains the same) ---
+# --- Governor ---
 def check_and_update_global_quota():
     if not db: return False
     today_str = datetime.date.today().isoformat()
@@ -36,7 +37,31 @@ def check_and_update_global_quota():
         return False
     counter_ref.set({'api_calls': firestore.Increment(1)}, merge=True)
     return True
-    
+
+# --- Memory Summarization Helper ---
+def update_memory_summary_in_background(user_id, prev_memory, user_message, ai_reply):
+    print(f"Starting background memory update for user: {user_id}")
+    try:
+        summarization_prompt = (
+            "You are a concise memory summarizer. From the PREVIOUS MEMORY and the LATEST EXCHANGE, "
+            "produce a ONE-SENTENCE summary (15-25 words) capturing the key themes, user's emotional state, "
+            "or important facts the companion should remember. Output only the sentence.\n\n"
+            f"PREVIOUS MEMORY: {prev_memory}\n"
+            f"LATEST EXCHANGE:\nUser: {user_message}\nAastha: {ai_reply}\n\n"
+            "UPDATED ONE-SENTENCE SUMMARY:"
+        )
+        response = model.generate_content([summarization_prompt])
+        new_summary = response.text.strip().replace("\n", " ")
+        user_ref = db.collection("users").document(user_id)
+        user_ref.set({
+            "memory_summary": new_summary,
+            "last_memory_update": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+        print(f"Successfully completed background memory update for user: {user_id}")
+        print(f"New summary: {new_summary}")
+    except Exception as e:
+        print(f"CRITICAL ERROR in background memory update for {user_id}: {e}")
+
 # --- Endpoints ---
 @app.route("/")
 def index(): return "Sahara Backend is healthy.", 200
@@ -44,12 +69,14 @@ def index(): return "Sahara Backend is healthy.", 200
 @app.route("/chat", methods=["POST"])
 def handle_chat():
     if not model: return jsonify({"reply": "AI Service not available."}), 503
-    
+
     data = request.json or {}
     user_message = data.get("message", "")
     user_id = data.get("userId")
 
     created_new_user = False
+    memory_summary = ""
+
     if not user_id:
         user_id = str(uuid.uuid4())
         created_new_user = True
@@ -57,11 +84,25 @@ def handle_chat():
 
     try:
         user_ref = db.collection("users").document(user_id)
-        user_ref.set({"last_active": firestore.SERVER_TIMESTAMP}, merge=True)
-    except Exception as e:
-        print(f"Warning: Failed to write user doc for {user_id}. Reason: {e}")
+        user_doc = user_ref.get()
 
-    # The new, enhanced system prompt
+        if not user_doc.exists:
+            print(f"First message from new user. Creating document for: {user_id}")
+            user_ref.set({
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "memory_summary": "",
+                "conversation_count": 1
+            })
+            memory_summary = ""
+        else:
+            user_ref.set({
+                "last_active": firestore.SERVER_TIMESTAMP,
+                "conversation_count": firestore.Increment(1)
+            }, merge=True)
+            memory_summary = user_doc.to_dict().get("memory_summary", "")
+    except Exception as e:
+        print(f"Warning: Failed to access or update user doc for {user_id}. Reason: {e}")
+
     system_prompt = (
         "You are Aastha, a compassionate and warm AI companion. Your approach follows a 'reflect-validate-question' loop.\n"
         "VARIATION RULES:\n"
@@ -74,21 +115,27 @@ def handle_chat():
         "User: I'm just so tired of everything.\n"
         "Aastha: I can hear the exhaustion in your words. Feeling tired of it all is a heavy weight to carry. What's one thing that is draining your energy the most?"
     )
-    
+
     full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAastha:"
 
     try:
-        # Check quota *before* the expensive AI call
         if not check_and_update_global_quota():
             return jsonify({"reply": "Aastha is resting. Please check back tomorrow."}), 503
 
         response = model.generate_content([full_prompt])
         ai_reply = response.text
-        
+
+        # --- Background memory update ---
+        memory_thread = threading.Thread(
+            target=update_memory_summary_in_background,
+            args=(user_id, memory_summary, user_message, ai_reply)
+        )
+        memory_thread.start()
+
         response_payload = {"reply": ai_reply}
         if created_new_user:
             response_payload["userId"] = user_id
-        
+
         return jsonify(response_payload)
     except Exception as e:
         print(f"Error calling Vertex AI: {e}")
@@ -117,4 +164,4 @@ def handle_journal_sync():
     except Exception as e: return jsonify({"status": "error"}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=True)       
+    app.run(host="0.0.0.0", port=8080, debug=True)
