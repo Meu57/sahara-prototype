@@ -56,7 +56,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _getLiveAasthaResponse(String message) async {
-    final userId = await SessionService.getUserId();
+    final String userId = await SessionService().getUserId();
+
     final String replyText = await ApiService.sendMessage(message, userId: userId);
 
     if (!mounted) return;

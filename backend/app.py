@@ -116,6 +116,15 @@ def handle_chat():
         "Aastha: I can hear the exhaustion in your words. Feeling tired of it all is a heavy weight to carry. What's one thing that is draining your energy the most?"
     )
 
+    context_prompt = (
+    f"REMEMBER THIS from past conversations: {memory_summary if memory_summary else 'This is the user\'s first conversation.'}" 
+    )
+
+    full_prompt = f"{system_prompt}\n\n{context_prompt}\n\nUser: {user_message}\nAastha:"
+
+
+
+
     full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAastha:"
 
     try:

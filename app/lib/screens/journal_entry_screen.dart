@@ -5,6 +5,7 @@ import 'package:flutter/services.dart'; // Required for HapticFeedback
 import 'package:sahara_app/models/journal_entry.dart';
 import 'package:sahara_app/services/database_service.dart';
 import 'package:sahara_app/services/api_service.dart'; // Import ApiService
+import 'package:sahara_app/services/session_service.dart'; // ✅ Import SessionService
 
 class JournalEntryScreen extends StatefulWidget {
   const JournalEntryScreen({super.key});
@@ -24,27 +25,31 @@ class _JournalEntryScreenState extends State<JournalEntryScreen> {
     super.dispose();
   }
 
-    Future<void> _saveJournalEntry() async {
-  if (_titleController.text.isEmpty || _bodyController.text.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Please fill out both title and body.')),
-    );
-    return;
-  }
+  Future<void> _saveJournalEntry() async {
+    if (_titleController.text.isEmpty || _bodyController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please fill out both title and body.')),
+      );
+      return;
+    }
 
     final newEntry = JournalEntry(
-    title: _titleController.text,
-    body: _bodyController.text,
-    date: DateTime.now(),
-  );
+      title: _titleController.text,
+      body: _bodyController.text,
+      date: DateTime.now(),
+    );
 
-  // Save locally
-    await  DatabaseService.instance.createJournalEntry(newEntry);
+    // Save locally
+    await DatabaseService.instance.createJournalEntry(newEntry);
 
-  // --- NEW LIVE LOGIC ---
+    // --- NEW LIVE LOGIC ---
     print('Attempting to sync journal entry to the cloud...');
-    final placeholderUserId = 'user_123';
-   ApiService.syncJournalEntry(placeholderUserId, newEntry);
+
+    // ✅ Get the real, persistent user ID
+    final String userId = await SessionService().getUserId();
+
+    // ✅ Sync to backend using the user ID and entry map
+    ApiService.syncJournalEntry(userId, newEntry);
 
     // Fire-and-forget: no await, no error handling for now
     // --- END OF NEW LOGIC ---
@@ -54,8 +59,7 @@ class _JournalEntryScreenState extends State<JournalEntryScreen> {
     if (mounted) {
       Navigator.of(context).pop();
     }
-}
-
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -63,7 +67,6 @@ class _JournalEntryScreenState extends State<JournalEntryScreen> {
       appBar: AppBar(
         title: const Text('New Journal Entry'),
         actions: [
-          // This is the save button in the top bar
           IconButton(
             icon: const Icon(Icons.save_outlined),
             onPressed: _saveJournalEntry,
@@ -90,7 +93,7 @@ class _JournalEntryScreenState extends State<JournalEntryScreen> {
                   hintText: 'Write what\'s on your mind...',
                   border: InputBorder.none,
                 ),
-                maxLines: null, // Allows the text field to expand
+                maxLines: null,
                 expands: true,
               ),
             ),

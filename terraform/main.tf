@@ -7,20 +7,19 @@ terraform {
   }
 }
 
-# --- Provider Configuration ---
 provider "google" {
   project = "sahara-wellness-prototype"
   region  = "asia-south1"
 }
 
-# --- IAM & Service Accounts ---
-
+# Service Account
 resource "google_service_account" "sahara_app_sa" {
   account_id   = "sahara-app-backend-sa"
   display_name = "Service Account for Sahara Backend Application"
   description  = "Used by the Cloud Run service to access Google Cloud APIs securely."
 }
 
+# IAM Bindings
 resource "google_project_iam_member" "vertex_ai_user_binding" {
   project = "sahara-wellness-prototype"
   role    = "roles/aiplatform.user"
@@ -51,8 +50,7 @@ resource "google_project_iam_member" "secret_manager_accessor_binding" {
   member  = google_service_account.sahara_app_sa.member
 }
 
-# --- Firestore Database ---
-
+# Firestore Setup
 resource "google_project_service" "firestore" {
   project            = "sahara-wellness-prototype"
   service            = "firestore.googleapis.com"
@@ -65,13 +63,10 @@ resource "google_firestore_database" "database" {
   location_id = "asia-south1"
   type        = "FIRESTORE_NATIVE"
 
-  depends_on = [
-    google_project_service.firestore
-  ]
+  depends_on = [google_project_service.firestore]
 }
 
-# --- Cloud Run Service ---
-
+# Cloud Run Setup
 resource "google_project_service" "cloudrun" {
   project            = "sahara-wellness-prototype"
   service            = "run.googleapis.com"
@@ -85,43 +80,40 @@ resource "google_cloud_run_v2_service" "sahara_backend" {
 
   template {
     service_account = google_service_account.sahara_app_sa.email
+    timeout         = "60s"
 
-    # --- THIS IS THE NEW, CRITICAL LINE ---
-    # Increase the request timeout to 300 seconds (5 minutes).
-    # This gives the Hugging Face API plenty of time for a cold start.
-    timeout = "300s"
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 3
+    }
 
     containers {
-      image = "us-docker.pkg.dev/cloudrun/container/hello"
+      image = "asia-south1-docker.pkg.dev/sahara-wellness-prototype/sahara-repo/sahara-backend:latest"
+      
 
-      # --- THIS IS THE FIX ---
-      # We are explicitly requesting more memory and CPU for our container.
-      # 1Gi is 1 Gibibyte (approx 1.07 GB), which should be enough for Gemini.
       resources {
+        cpu_idle = true
+
         limits = {
-          "cpu"    = "1"
-          "memory" = "1Gi"
+          cpu    = "0.5"
+          memory = "512Mi"
         }
       }
-      # --- END OF FIX ---
     }
   }
 
-  depends_on = [
-    google_project_service.cloudrun
-  ]
+  depends_on = [google_project_service.cloudrun]
 }
 
-resource "google_cloud_run_v2_service_iam_member" "allow_public_access" {
-  project  = "sahara-wellness-prototype"
-  name     = "sahara-backend-service"
-  location = "asia-south1"
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
-
+# IAM for Cloud Build
 resource "google_service_account_iam_member" "cloudbuild_can_act_as_app_sa" {
   service_account_id = google_service_account.sahara_app_sa.name
   role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:78116732933@cloudbuild.gserviceaccount.com" # The Cloud Build Worker
+  member             = "serviceAccount:78116732933@cloudbuild.gserviceaccount.com"
+}
+
+resource "google_project_iam_member" "cloudbuild_artifact_admin" {
+  project = "sahara-wellness-prototype"
+  role    = "roles/artifactregistry.admin"
+  member  = "serviceAccount:78116732933@cloudbuild.gserviceaccount.com"
 }

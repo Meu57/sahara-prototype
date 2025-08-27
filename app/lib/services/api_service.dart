@@ -28,7 +28,7 @@ class ApiService {
         final map = jsonDecode(response.body);
         // If the server returns a new userId, persist it on the client
         if (map['userId'] != null && map['userId'] is String) {
-          await SessionService.setUserId(map['userId']);
+          await SessionService().setUserId(map['userId']);
         }
         return map['reply'] ?? "Sorry, no reply was received from the server.";
       } else {
