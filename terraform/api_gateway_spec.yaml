@@ -1,0 +1,50 @@
+swagger: '2.0'
+info:
+  title: Sahara API
+  description: Secure API for the Sahara Wellness Prototype
+  version: 1.0.0
+schemes:
+  - https
+produces:
+  - application/json
+
+securityDefinitions:
+  api_key:
+    type: "apiKey"
+    name: "x-api-key"
+    in: "header"
+
+security:
+  - api_key: []
+
+paths:
+  '/{path=**}':
+    parameters:
+      - in: path
+        name: path
+        type: string
+        required: true
+
+    get:
+      summary: "Proxy GET requests to the backend"
+      operationId: "proxy-get"
+      produces:
+        - "application/json"
+      x-google-backend:
+        address: ${cloud_run_url}
+        jwt_audience: ${jwt_audience}
+      responses:
+        '200':
+          description: "Successful GET response"
+
+    post:
+      summary: "Proxy POST requests to the backend"
+      operationId: "proxy-post"
+      produces:
+        - "application/json"
+      x-google-backend:
+        address: ${cloud_run_url}
+        jwt_audience: ${jwt_audience}
+      responses:
+        '200':
+          description: "Successful POST response"

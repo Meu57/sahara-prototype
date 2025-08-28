@@ -1,5 +1,4 @@
-# backend/app.py (Final Version with Memory Summarization and Conversation Count)
-
+# backend/app.py (Final Version with Per-Key Security and Robust Transactions)
 import os
 import datetime
 import threading
@@ -10,13 +9,13 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 
 # --- Configuration ---
-PROJECT_ID = "sahara-wellness-prototype"
+PROJECT_ID = "sahara-wellness-prototype" 
 LOCATION = "asia-south1"
 MODEL_NAME = "gemini-1.5-pro"
-DAILY_GLOBAL_API_LIMIT = 240
 
 # --- Initialization ---
 app = Flask(__name__)
+
 try:
     db = firestore.Client(project=PROJECT_ID)
     vertexai.init(project=PROJECT_ID, location=LOCATION)
@@ -27,16 +26,59 @@ except Exception as e:
     model = None
     db = None
 
-# --- Governor ---
-def check_and_update_global_quota():
-    if not db: return False
+# NOTE: The global 'transaction' variable has been correctly removed.
+
+# --- NEW SECURITY MIDDLEWARE ---
+def require_api_key_and_quota(request):
+    """
+    Checks for a valid API key and ensures its usage quota has not been exceeded.
+    Uses a Firestore transaction for safe, concurrent updates.
+    """
+    if not db:
+        return False, ("Server is not properly initialized.", 503)
+
+    api_key = request.headers.get("x-api-key")
+    if not api_key:
+        return False, ("API key is missing.", 401)
+
+    key_ref = db.collection('api_keys').document(api_key)
     today_str = datetime.date.today().isoformat()
-    counter_ref = db.collection('usage_stats').document(today_str)
-    counter_doc = counter_ref.get()
-    if counter_doc.exists and counter_doc.to_dict().get('api_calls', 0) >= DAILY_GLOBAL_API_LIMIT:
-        return False
-    counter_ref.set({'api_calls': firestore.Increment(1)}, merge=True)
-    return True
+
+    try:
+        @firestore.transactional
+        def update_usage_in_transaction(transaction, key_ref, today_str):
+            key_snapshot = key_ref.get(transaction=transaction)
+
+            if not key_snapshot.exists:
+                return False, ("Invalid API key.", 403)
+
+            key_data = key_snapshot.to_dict()
+            daily_limit = key_data.get("daily_limit", 50) 
+            usage = key_data.get("usage", 0)
+            last_used = key_data.get("last_used", "")
+
+            # If last used was before today, reset the counter
+            if last_used < today_str:
+                usage = 0
+
+            if usage >= daily_limit:
+                return False, ("API quota for this key has been exceeded for today.", 429)
+
+            # Increment usage and update the last_used date
+            transaction.update(key_ref, {
+                'usage': usage + 1,
+                'last_used': today_str
+            })
+            return True, None
+
+        # --- THE FIX IS APPLIED HERE ---
+        # This gets the transaction object and runs the function all in one safe step.
+        is_ok, info_or_error = db.run_transaction(update_usage_in_transaction, key_ref, today_str)
+        return is_ok, info_or_error
+
+    except Exception as e:
+        print(f"Error during Firestore transaction: {e}")
+        return False, ("Internal server error during quota check.", 500)
 
 # --- Memory Summarization Helper ---
 def update_memory_summary_in_background(user_id, prev_memory, user_message, ai_reply):
@@ -64,16 +106,22 @@ def update_memory_summary_in_background(user_id, prev_memory, user_message, ai_r
 
 # --- Endpoints ---
 @app.route("/")
-def index(): return "Sahara Backend is healthy.", 200
+def index():
+    return "Sahara Backend is healthy.", 200
 
 @app.route("/chat", methods=["POST"])
 def handle_chat():
-    if not model: return jsonify({"reply": "AI Service not available."}), 503
+    is_ok, info_or_error = require_api_key_and_quota(request)
+    if not is_ok:
+        error_message, status_code = info_or_error
+        return jsonify({"error": error_message}), status_code
+
+    if not model:
+        return jsonify({"reply": "AI Service not available."}), 503
 
     data = request.json or {}
     user_message = data.get("message", "")
     user_id = data.get("userId")
-
     created_new_user = False
     memory_summary = ""
 
@@ -117,24 +165,17 @@ def handle_chat():
     )
 
     context_prompt = (
-    f"REMEMBER THIS from past conversations: {memory_summary if memory_summary else 'This is the user\'s first conversation.'}" 
-    )
+    f"REMEMBER THIS from past conversations: {memory_summary if memory_summary else 'This is the user\'s first conversation.'}"
+        )
+
+
 
     full_prompt = f"{system_prompt}\n\n{context_prompt}\n\nUser: {user_message}\nAastha:"
 
-
-
-
-    full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAastha:"
-
     try:
-        if not check_and_update_global_quota():
-            return jsonify({"reply": "Aastha is resting. Please check back tomorrow."}), 503
-
         response = model.generate_content([full_prompt])
         ai_reply = response.text
 
-        # --- Background memory update ---
         memory_thread = threading.Thread(
             target=update_memory_summary_in_background,
             args=(user_id, memory_summary, user_message, ai_reply)
@@ -144,33 +185,54 @@ def handle_chat():
         response_payload = {"reply": ai_reply}
         if created_new_user:
             response_payload["userId"] = user_id
-
         return jsonify(response_payload)
+        
     except Exception as e:
         print(f"Error calling Vertex AI: {e}")
         return jsonify({"reply": "I'm having a little trouble thinking right now."}), 500
 
 @app.route("/resources", methods=["GET"])
 def get_resources():
-    if not db: return jsonify([]), 503
+    is_ok, info_or_error = require_api_key_and_quota(request)
+    if not is_ok:
+        error_message, status_code = info_or_error
+        return jsonify({"error": error_message}), status_code
+
+    if not db:
+        return jsonify([]), 503
+        
     try:
         articles_ref = db.collection('articles')
         articles = [doc.to_dict() for doc in articles_ref.stream()]
         return jsonify(articles)
-    except Exception as e: return jsonify([]), 500
+    except Exception as e:
+        print(f"Error fetching resources: {e}")
+        return jsonify([]), 500
 
 @app.route("/journal/sync", methods=["POST"])
 def handle_journal_sync():
-    if not db: return jsonify({"status": "error"}), 503
+    is_ok, info_or_error = require_api_key_and_quota(request)
+    if not is_ok:
+        error_message, status_code = info_or_error
+        return jsonify({"error": error_message}), status_code
+
+    if not db:
+        return jsonify({"status": "error", "message": "Database not connected"}), 503
+
     data = request.json or {}
     user_id = data.get('userId')
     entry = data.get('entry')
-    if not user_id or not entry: return jsonify({"status": "error"}), 400
+
+    if not user_id or not entry:
+        return jsonify({"status": "error", "message": "userId and entry are required"}), 400
+    
     try:
         user_entries_ref = db.collection('users').document(user_id).collection('entries')
         user_entries_ref.add(entry)
         return jsonify({"status": "success"}), 200
-    except Exception as e: return jsonify({"status": "error"}), 500
+    except Exception as e:
+        print(f"Error syncing journal: {e}")
+        return jsonify({"status": "error", "message": "Could not save entry"}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=False)
