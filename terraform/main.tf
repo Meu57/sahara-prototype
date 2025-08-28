@@ -75,6 +75,13 @@ resource "google_firestore_database" "database" {
 # ---------------------------------------------------------------- #
 #                    --- CLOUD RUN BACKEND SERVICE ---            #
 # ---------------------------------------------------------------- #
+
+data "google_cloudbuild_trigger" "main_trigger" {
+  project_id = "sahara-wellness-prototype"
+  trigger_id = "push-to-main-v2" # The name of our trigger
+}
+
+
 resource "google_cloud_run_v2_service" "sahara_backend" {
   name     = "sahara-backend-service"
   location = "asia-south1"
@@ -85,7 +92,7 @@ resource "google_cloud_run_v2_service" "sahara_backend" {
     timeout         = "60s"
 
     containers {
-      image = "us-docker.pkg.dev/cloudrun/container/hello" # ✅ Replace with your actual image
+      image = "asia-south1-docker.pkg.dev/sahara-wellness-prototype/sahara-repo/sahara-backend:${data.google_cloudbuild_trigger.main_trigger.substitutions._SHORT_SHA}" # ✅ Replace with your actual image
 
       resources {
         startup_cpu_boost = false
@@ -98,7 +105,12 @@ resource "google_cloud_run_v2_service" "sahara_backend" {
     }
   }
 
-  depends_on = [google_project_service.cloudrun_api]
+  depends_on = [
+  google_project_service.cloudrun_api,
+  google_api_gateway_gateway.sahara_gateway,
+  data.google_cloudbuild_trigger.main_trigger
+]
+
 }
 
 # ---------------------------------------------------------------- #
@@ -178,6 +190,15 @@ resource "google_api_gateway_api" "sahara_api" {
   depends_on = [google_project_service.apigateway]
 }
 
+# ✅ NEW: Enable the managed service created by the API Gateway
+resource "google_project_service" "sahara_api_managed_service_enablement" {
+  project            = "sahara-wellness-prototype"
+  service            = google_api_gateway_api.sahara_api.managed_service
+  disable_on_destroy = false
+  depends_on         = [google_api_gateway_api.sahara_api]
+}
+
+
 # ✅ Task 5: Define the API Config using OpenAPI spec
 resource "google_api_gateway_api_config" "sahara_api_config" {
   provider        = google-beta
@@ -208,14 +229,15 @@ resource "google_api_gateway_gateway" "sahara_gateway" {
   project    = "sahara-wellness-prototype"
   gateway_id = "sahara-gateway"
   api_config = google_api_gateway_api_config.sahara_api_config.id
-  region     = "asia-northeast1" # ✅ Updated to supported region
-  depends_on = [google_api_gateway_api_config.sahara_api_config]
+  region     = "asia-northeast1"
+  depends_on = [google_project_service.sahara_api_managed_service_enablement] # ✅ Updated dependency
 }
+
 
 
 # --- OUTPUTS ---
 
-output "gateway_url" {
-  description = "The public default URL of the API Gateway"
-  value       = "https://${google_api_gateway_gateway.sahara_gateway.default_hostname}"
-}
+# output "gateway_url" {
+  # description = "The public default URL of the API Gateway"
+  # value       = "https://${google_api_gateway_gateway.sahara_gateway.default_hostname}"
+# }
