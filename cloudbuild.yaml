@@ -1,15 +1,16 @@
-# cloudbuild.yaml (Simplified for Terraform-managed deployment)
 steps:
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build and Push'
     args:
       - 'build'
       - '--tag=asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:${SHORT_SHA}'
+      - '--tag=asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:latest'
       - './backend'
-      - '--push'  # ✅ This builds and pushes in one step
+      - '--push'
 
 images:
   - 'asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:${SHORT_SHA}'
+  - 'asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY

@@ -77,8 +77,9 @@ resource "google_firestore_database" "database" {
 # ---------------------------------------------------------------- #
 
 data "google_cloudbuild_trigger" "main_trigger" {
-  project_id = "sahara-wellness-prototype"
+  project = "sahara-wellness-prototype"
   trigger_id = "push-to-main-v2" # The name of our trigger
+  location = "global"                        # ✅ Cloud Build triggers are usually in 'global'
 }
 
 
@@ -92,7 +93,10 @@ resource "google_cloud_run_v2_service" "sahara_backend" {
     timeout         = "60s"
 
     containers {
-      image = "asia-south1-docker.pkg.dev/sahara-wellness-prototype/sahara-repo/sahara-backend:${data.google_cloudbuild_trigger.main_trigger.substitutions._SHORT_SHA}" # ✅ Replace with your actual image
+      image = "asia-south1-docker.pkg.dev/sahara-wellness-prototype/sahara-repo/sahara-backend:latest"
+
+
+
 
       resources {
         startup_cpu_boost = false
@@ -107,7 +111,7 @@ resource "google_cloud_run_v2_service" "sahara_backend" {
 
   depends_on = [
   google_project_service.cloudrun_api,
-  google_api_gateway_gateway.sahara_gateway,
+  
   data.google_cloudbuild_trigger.main_trigger
 ]
 
