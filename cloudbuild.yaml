@@ -1,12 +1,27 @@
+# ✅ cloudbuild.yaml (Corrected Version)
+
 steps:
+  # Step 1: Build the image and tag it with both SHORT_SHA and latest
   - name: 'gcr.io/cloud-builders/docker'
-    id: 'Build and Push'
+    id: 'Build'
     args:
       - 'build'
-      - '--tag=asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:${SHORT_SHA}'
-      - '--tag=asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:latest'
+      - '-t'
+      - 'asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:${SHORT_SHA}'
+      - '-t'
+      - 'asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:latest'
       - './backend'
-      - '--push'
+
+  # Step 2: Push both tags to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push'
+    args:
+      - 'push'
+      - 'asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:${SHORT_SHA}'
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:latest'
 
 images:
   - 'asia-south1-docker.pkg.dev/${PROJECT_ID}/sahara-repo/sahara-backend:${SHORT_SHA}'
