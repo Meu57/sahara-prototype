@@ -16,4 +16,4 @@ COPY . .
 
 # Stage 5: Define the command to run the application using Gunicorn
 # Gunicorn is a professional-grade server, better than Flask's built-in one.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "app:app"]
+CMD ["waitress-serve", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "app:app"]
