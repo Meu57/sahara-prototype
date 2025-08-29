@@ -237,7 +237,11 @@ resource "google_api_gateway_gateway" "sahara_gateway" {
   depends_on = [google_project_service.sahara_api_managed_service_enablement] # ✅ Updated dependency
 }
 
-
+resource "google_project_iam_member" "logs_writer" {
+  project = "sahara-wellness-prototype"
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.sahara_app_sa.email}"
+}
 
 # --- OUTPUTS ---
 
