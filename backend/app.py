@@ -164,9 +164,10 @@ def handle_chat():
         "Aastha: I can hear the exhaustion in your words. Feeling tired of it all is a heavy weight to carry. What's one thing that is draining your energy the most?"
     )
 
-    context_prompt = (
-    f"REMEMBER THIS from past conversations: {memory_summary if memory_summary else 'This is the user\'s first conversation.'}"
-        )
+    # Replace the buggy line with this (recommended)
+    default_memory_text = "This is the user's first conversation."
+    context_prompt = f"REMEMBER THIS from past conversations: {memory_summary or default_memory_text}"
+
 
 
 
@@ -233,6 +234,14 @@ def handle_journal_sync():
     except Exception as e:
         print(f"Error syncing journal: {e}")
         return jsonify({"status": "error", "message": "Could not save entry"}), 500
+
+@app.route("/_debug")
+def debug():
+    return jsonify({
+      "k_revision": os.environ.get("K_REVISION"),
+      "k_configuration": os.environ.get("K_CONFIGURATION"),
+      "k_service": os.environ.get("K_SERVICE"),
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=False)
