@@ -103,7 +103,7 @@ resource "google_cloud_run_v2_service" "sahara_backend" {
         cpu_idle          = true
         limits = {
           cpu    = "0.5"
-          memory = "512Mi"
+          memory = "1Gi"
         }
       }
     }

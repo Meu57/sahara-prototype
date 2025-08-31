@@ -1,50 +1,95 @@
-swagger: '2.0'
+swagger: "2.0"
 info:
-  title: Sahara API
-  description: Secure API for the Sahara Wellness Prototype
-  version: 1.0.0
+  title: "Sahara API Gateway"
+  version: "1.0.0"
 schemes:
-  - https
+  - "https"
 produces:
-  - application/json
+  - "application/json"
 
+# Security: API key header
 securityDefinitions:
-  api_key:
+  api_key_header:
     type: "apiKey"
     name: "x-api-key"
     in: "header"
 
 security:
-  - api_key: []
+  - api_key_header: []
 
+# Catch-all wildcard path (double-wildcard). Must be the last segment.
 paths:
-  '/{path=**}':
+  "/{path=**}":
     parameters:
-      - in: path
-        name: path
-        type: string
+      - name: path
+        in: path
         required: true
+        type: string
+        description: "Greedy path capture (may include slashes)."
 
     get:
-      summary: "Proxy GET requests to the backend"
-      operationId: "proxy-get"
-      produces:
-        - "application/json"
+      summary: "Proxy all GET requests to the backend"
+      operationId: "proxy-get-all"
       x-google-backend:
-        address: ${cloud_run_url}
-        jwt_audience: ${jwt_audience}
+        address: "${cloud_run_url}"
+        jwt_audience: "${cloud_run_url}"
+        # Make the gateway append the incoming path to the backend address:
+        path_translation: APPEND_PATH_TO_ADDRESS
       responses:
         '200':
-          description: "Successful GET response"
+          description: "OK"
 
     post:
-      summary: "Proxy POST requests to the backend"
-      operationId: "proxy-post"
-      produces:
-        - "application/json"
+      summary: "Proxy all POST requests to the backend"
+      operationId: "proxy-post-all"
       x-google-backend:
-        address: ${cloud_run_url}
-        jwt_audience: ${jwt_audience}
+        address: "${cloud_run_url}"
+        jwt_audience: "${cloud_run_url}"
+        path_translation: APPEND_PATH_TO_ADDRESS
       responses:
         '200':
-          description: "Successful POST response"
+          description: "OK"
+
+    put:
+      summary: "Proxy all PUT requests to the backend"
+      operationId: "proxy-put-all"
+      x-google-backend:
+        address: "${cloud_run_url}"
+        jwt_audience: "${cloud_run_url}"
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        '200':
+          description: "OK"
+
+    delete:
+      summary: "Proxy all DELETE requests to the backend"
+      operationId: "proxy-delete-all"
+      x-google-backend:
+        address: "${cloud_run_url}"
+        jwt_audience: "${cloud_run_url}"
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        '200':
+          description: "OK"
+
+    patch:
+      summary: "Proxy all PATCH requests to the backend"
+      operationId: "proxy-patch-all"
+      x-google-backend:
+        address: "${cloud_run_url}"
+        jwt_audience: "${cloud_run_url}"
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        '200':
+          description: "OK"
+
+    options:
+      summary: "Proxy OPTIONS"
+      operationId: "proxy-options-all"
+      x-google-backend:
+        address: "${cloud_run_url}"
+        jwt_audience: "${cloud_run_url}"
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        '200':
+          description: "OK"
