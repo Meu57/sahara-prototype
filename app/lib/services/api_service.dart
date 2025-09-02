@@ -1,5 +1,8 @@
+// lib/services/api_service.dart
+// Definitive version: Secure, Web-Compatible, and Robust.
+
 import 'dart:convert';
-import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
@@ -7,84 +10,123 @@ import 'package:sahara_app/models/article.dart';
 import 'package:sahara_app/models/journal_entry.dart';
 import 'package:sahara_app/services/session_service.dart';
 
+// This is a clean way to handle our build-time secrets.
+class AppConfig {
+  /// The API Key must be supplied when you run the app like this:
+  /// flutter run --dart-define=SAHARA_API_KEY=your_key_here
+  static const String apiKey = String.fromEnvironment('SAHARA_API_KEY', defaultValue: '');
+}
+
 class ApiService {
-  static const String _baseUrl = 'https://sahara-backend-service-78116732933.asia-south1.run.app';
+  // Private constructor to prevent instantiation
+  ApiService._();
+
+  // Our secure, public-facing API Gateway URL
+  static const String _baseUrl = 'https://sahara-gateway-zvwoow5.an.gateway.dev';
+
+  static final http.Client _client = http.Client();
   static final Logger _logger = Logger();
 
-  // --- CHAT ENDPOINT ---
+  // This private helper creates our secure headers for every single request.
+  // It includes the "fail-fast" safety check your friend recommended.
+  static Map<String, String> get _secureHeaders {
+    final key = AppConfig.apiKey;
+    if (key.isEmpty) {
+      // This will cause a clear error during development if you forget the --dart-define flag.
+      throw Exception('FATAL ERROR: SAHARA_API_KEY was not provided. Please run with --dart-define=SAHARA_API_KEY=your-key');
+    }
+    return {
+      'Content-Type': 'application/json; charset=UTF-8',
+      'x-api-key': key,
+    };
+  }
+  
+  // This is a safer way to handle potential non-JSON error responses from the server.
+  static dynamic _handleResponse(http.Response response) {
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      if (response.body.isEmpty) return null;
+      try {
+        return jsonDecode(response.body);
+      } catch (e) {
+        // If the server returns something that isn't JSON, return the raw text.
+        return response.body; 
+      }
+    } else {
+      String errorMessage = 'API Error ${response.statusCode}';
+      try {
+          final parsed = jsonDecode(response.body);
+          if (parsed is Map) {
+              errorMessage = parsed['error']?.toString() ?? parsed['message']?.toString() ?? response.body;
+          }
+      } catch (_) {}
+      throw Exception(errorMessage);
+    }
+  }
+
+  // --- PUBLIC API METHODS ---
+
   static Future<String> sendMessage(String message, {String? userId}) async {
     try {
-      final body = {
-        'message': message,
-        if (userId != null) 'userId': userId,
-      };
-      final response = await http.post(
-        Uri.parse('$_baseUrl/chat'),
-        headers: {'Content-Type': 'application/json; charset=UTF-8'},
-        body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 60)); // Increased timeout for AI
+      final localUserId = userId ?? await SessionService().getUserId();
+      final payload = {'message': message, 'userId': localUserId};
+      
+      final response = await _client.post(
+          Uri.parse('$_baseUrl/chat'),
+          headers: _secureHeaders, 
+          body: jsonEncode(payload)
+      ).timeout(const Duration(seconds: 60));
 
-      if (response.statusCode == 200) {
-        final map = jsonDecode(response.body);
-        // If the server returns a new userId, persist it on the client
-        if (map['userId'] != null && map['userId'] is String) {
-          await SessionService().setUserId(map['userId']);
-        }
-        return map['reply'] ?? "Sorry, no reply was received from the server.";
-      } else {
-        _logger.e('API Error: ${response.statusCode} - ${response.body}');
-        return "Sorry, there was an error with the server.";
+      final data = _handleResponse(response) as Map<String, dynamic>;
+
+      // Handle the server providing a userId for the first time.
+      if (data['userId'] is String) {
+          await SessionService().setUserId(data['userId']);
       }
-    } on SocketException {
-      return "Please check your internet connection.";
+      return data['reply'] ?? "Sorry, no valid reply was found.";
     } catch (e) {
-      _logger.e('Error sending message: $e');
-      return "Sorry, I am having trouble connecting right now.";
+      _logger.e('sendMessage failed: $e');
+      return "Sorry, an unexpected error occurred. Please try again.";
     }
   }
-
-  // --- JOURNAL SYNC ENDPOINT ---
-  static Future<void> syncJournalEntry(String userId, JournalEntry entry) async {
-    try {
-      await http.post(
-        Uri.parse('$_baseUrl/journal/sync'),
-        headers: {
-          'Content-Type': 'application/json; charset=UTF-8',
-        },
-        body: jsonEncode({
-          'userId': userId,
-          'entry': entry.toMap(),
-        }),
-      ).timeout(const Duration(seconds: 15));
-      _logger.i('Journal entry synced successfully.');
-    } catch (e) {
-      _logger.e('Error syncing journal entry: $e');
-    }
-  }
-
-  // --- RESOURCE FETCH ENDPOINT ---
+  
   static Future<List<Article>> getResources() async {
     try {
-      final response = await http.get(
-        Uri.parse('$_baseUrl/resources'),
-      ).timeout(const Duration(seconds: 15));
+      final response = await _client.get(
+        Uri.parse('$_baseUrl/resources'), 
+        headers: _secureHeaders
+      );
+      final data = _handleResponse(response) as List<dynamic>;
+      // We will assume the Article model has a .fromJson constructor.
+      // return data.map((json) => Article.fromJson(json)).toList();
+      
+      // Let's use the old, safer mapping for now.
+      return data.map((json) {
+        final item = json as Map<String, dynamic>;
+        return Article(
+          title: (item['title'] as String?) ?? '',
+          snippet: (item['snippet'] as String?) ?? '',
+          content: (item['content'] as String?) ?? (item['snippet'] as String?) ?? '',
+          icon: Icons.article_outlined,
+        );
+      }).toList();
 
-      if (response.statusCode == 200) {
-        List<dynamic> jsonList = jsonDecode(response.body);
-        return jsonList.map((json) {
-          return Article(
-            title: json['title'] ?? '',
-            snippet: json['snippet'] ?? '',
-            content: json['content'] ?? json['snippet'] ?? '',
-            icon: Icons.article_outlined,
-          );
-        }).toList();
-      } else {
-        throw Exception('Failed to load resources. Status code: ${response.statusCode}');
-      }
     } catch (e) {
-      _logger.e('Error fetching resources: $e');
-      return [];
+      _logger.e('getResources failed: $e');
+      return []; // Return an empty list on failure
+    }
+  }
+
+  static Future<void> syncJournalEntry(String userId, JournalEntry entry) async {
+    try {
+      final payload = {'userId': userId, 'entry': entry.toMap()};
+      await _client.post(
+        Uri.parse('$_baseUrl/journal/sync'), 
+        headers: _secureHeaders, 
+        body: jsonEncode(payload)
+      );
+      _logger.i('Journal entry sync successful.');
+    } catch (e) {
+      _logger.e('syncJournalEntry failed: $e');
     }
   }
 }

@@ -6,6 +6,7 @@ import uuid
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 # -----------------------
 # Config (env overrides)
@@ -31,6 +32,8 @@ _model_lock = threading.Lock()
 # Flask app + logging
 # -----------------------
 app = Flask(__name__)
+app = Flask(__name__) 
+CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sahara-backend")
 

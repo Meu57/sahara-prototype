@@ -1,23 +1,29 @@
-// lib/main.dart
+// lib/main.dart (Definitive, Platform-Aware Version)
 
-import 'dart:io'; // Needed to check the platform
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:sahara_app/screens/welcome_screen.dart';
-import 'package:sahara_app/services/session_service.dart'; // ✅ Import SessionService
+import 'package:sahara_app/services/session_service.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sahara_app/theme/app_theme.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart'; // ✅ Import for desktop compatibility
 
 Future<void> main() async {
-  // --- DESKTOP DATABASE FIX ---
-  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
+  // 1. Make sure Flutter binding is initialized first. This is a best practice.
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 2. This is the critical fix: Only run desktop-specific database 
+  //    initialization when NOT running in a browser.
+  if (!kIsWeb) {
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+    }
   }
 
-  // --- FLUTTER INIT + SESSION WARM-UP ---
-  WidgetsFlutterBinding.ensureInitialized();
-  await SessionService().getUserId(); // ✅ Warm up session cache
+  // 3. Warm up the session cache.
+  await SessionService().getUserId();
 
   runApp(const SaharaApp());
 }
