@@ -32,10 +32,30 @@ _model_lock = threading.Lock()
 # Flask app + logging
 # -----------------------
 app = Flask(__name__)
-app = Flask(__name__) 
-CORS(app)
+CORS(app)  # keep this; we also add explicit after_request headers below
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sahara-backend")
+
+# -----------------------
+# Ensure CORS headers on every response (explicit, hackathon-safe)
+# -----------------------
+@app.after_request
+def add_cors_headers(response):
+    # For the hackathon/demo: using '*' is simplest. In production, replace '*' with your frontend origin.
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, x-api-key, Authorization"
+    response.headers["Access-Control-Expose-Headers"] = "Content-Type, x-api-key"
+    return response
+
+# Generic OPTIONS responder (ensures preflight receives 204)
+@app.route("/", methods=["OPTIONS"])
+def options_root():
+    return ("", 204)
+
+@app.route("/<path:path>", methods=["OPTIONS"])
+def options(path):
+    return ("", 204)
 
 # -----------------------
 # Initialization helpers
@@ -134,6 +154,11 @@ def check_and_update_global_quota():
 # Per-key quota & API key enforcement (transactional)
 # -----------------------
 def require_api_key_and_quota(flask_request):
+    # Allow CORS preflight requests (OPTIONS) to pass through without API key validation.
+    # Browsers send OPTIONS before requests that include custom headers like 'x-api-key'.
+    if flask_request.method == "OPTIONS":
+        return True, None
+
     init_services_lightweight()
     if not db or FIRESTORE is None:
         return False, ("Server not ready", 503)
