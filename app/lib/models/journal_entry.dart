@@ -1,4 +1,5 @@
 // lib/models/journal_entry.dart
+
 class JournalEntry {
   final int? id;
   final String title;
@@ -12,13 +13,23 @@ class JournalEntry {
     required this.date,
   });
 
-  // A helper method to convert our object to a Map for the database.
+  /// Converts a JournalEntry object into a Map for sending to the backend
   Map<String, dynamic> toMap() {
     return {
       'id': id,
       'title': title,
       'body': body,
-      'date': date.toIso8601String(), // Store date as a string
+      'date': date.toIso8601String(), // Store date as ISO 8601 string
     };
+  }
+
+  /// Creates a JournalEntry object from a Map received from the backend
+  factory JournalEntry.fromMap(Map<String, dynamic> map) {
+    return JournalEntry(
+      id: map['id'] is int ? map['id'] : null,
+      title: map['title'] ?? '',
+      body: map['body'] ?? '',
+      date: DateTime.tryParse(map['date'] ?? '') ?? DateTime.now(),
+    );
   }
 }

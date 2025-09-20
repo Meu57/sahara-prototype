@@ -1,7 +1,12 @@
 // lib/services/session_service.dart
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+import 'package:logger/logger.dart';
+
+final logger = Logger();
+
 
 class SessionService {
   // Singleton boilerplate
@@ -18,6 +23,9 @@ class SessionService {
   // A guard to prevent multiple simultaneous initializations (race condition)
   Future<void>? _initFuture;
 
+  /// Simple cross-screen notifier: increment .value to signal a refresh is needed.
+  static final ValueNotifier<int> journeyRefresh = ValueNotifier<int>(0);
+
   /// Returns the cached userId; if not cached, loads from disk.
   /// If no ID exists, generates a new one, persists it, and caches it.
   Future<String> getUserId() async {
@@ -33,7 +41,7 @@ class SessionService {
     // Start the one-time initialization.
     _initFuture = _loadOrCreateUserId();
     await _initFuture;
-    
+
     // Reset the future so it can be run again if needed.
     _initFuture = null;
     return _userId!;
@@ -44,8 +52,7 @@ class SessionService {
     _userId = id; // Update the in-memory cache
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyUserId, id);
-    print('SessionService: Saved server-provided userId: $id');
-  }
+    logger.i('SessionService: Saved server-provided userId: $id');  }
 
   // Internal helper that does the actual work.
   Future<void> _loadOrCreateUserId() async {
@@ -56,10 +63,10 @@ class SessionService {
       _userId = storedId;
     } else {
       // No stored ID — create one, persist it, and cache it.
-      final newId = Uuid().v4();
+      final newId =  Uuid().v4();
       _userId = newId;
       await prefs.setString(_keyUserId, newId);
-      print('SessionService: Created new anonymous id: $newId');
+      logger.i('SessionService: Created new anonymous id: $newId');
     }
   }
 

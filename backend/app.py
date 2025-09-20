@@ -1,12 +1,27 @@
 # backend/app.py
 import os
-import datetime
 import threading
 import uuid
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from datetime import date,datetime,timezone, timedelta
+from google.cloud import firestore as firestore_module
+from google.api_core import exceptions as google_exceptions
+FIRESTORE = firestore_module  # Only for SERVER_TIMESTAMP
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import random   
+
+SUGGESTION_MAP = {
+    "stress": {
+        "title": "Try a 5-minute breathing exercise",
+        "resource_id": "PBMtCFmQdfa2IRoBB46"
+    },
+    "anxious": {
+        "title": "Try a 5-minute breathing exercise",
+        "resource_id": "PBMtCFmQdfa2IRoBB46" # same as stress
+    }
+}
 
 # -----------------------
 # Config (env overrides)
@@ -22,7 +37,6 @@ MODEL_CALL_TIMEOUT = int(os.environ.get("MODEL_CALL_TIMEOUT_SECONDS", "20"))
 # Globals (populated lazily)
 # -----------------------
 db = None
-FIRESTORE = None
 VERTEX = None
 _vertex_initialized = False
 _model = None
@@ -134,9 +148,9 @@ def check_and_update_global_quota():
     init_firestore()
     if not db or FIRESTORE is None:
         logger.warning("Firestore unavailable during global quota check. Returning QUOTA_FAIL_OPEN=%s", QUOTA_FAIL_OPEN)
-        return QUOTA_FAIL_OPEN
+        return QUOTA_FAIL_OPEN 
 
-    today = datetime.date.today().isoformat()
+    today = date.today().isoformat()
     counter_ref = db.collection("usage_stats").document(today)
     try:
         doc = counter_ref.get()
@@ -153,62 +167,104 @@ def check_and_update_global_quota():
 # -----------------------
 # Per-key quota & API key enforcement (transactional)
 # -----------------------
+# PASTE THIS NEW CODE INTO YOUR app.py  
+# Replace your _transactional_key_update + require_api_key_and_quota with this version. 
+# transactional pattern compatible with google-cloud-firestore v2.x
+def _transactional_key_update(transaction, key_ref, today_str):
+    """
+    Runs inside a transaction (transaction passed by the decorator).
+    """
+    key_snapshot = key_ref.get(transaction=transaction)
+    if not key_snapshot.exists:
+        raise google_exceptions.NotFound("Invalid API key.")
+
+    key_data = key_snapshot.to_dict() or {}
+    daily_limit = int(key_data.get("quota_daily", 50))
+    usage_today = int(key_data.get("used_today", 0))
+    last_used_str = _normalize_last_used(key_data.get("last_used"))
+
+    # reset if new day
+    if last_used_str < today_str:
+        usage_today = 0
+
+    if usage_today >= daily_limit:
+        raise ValueError("API quota for this key has been exceeded.")
+
+    # atomic update inside the transaction
+    transaction.update(key_ref, {
+        "used_today": usage_today + 1,
+        "last_used": FIRESTORE.SERVER_TIMESTAMP
+    })
+    return True 
+
 def require_api_key_and_quota(flask_request):
-    # Allow CORS preflight requests (OPTIONS) to pass through without API key validation.
-    # Browsers send OPTIONS before requests that include custom headers like 'x-api-key'.
+    logger.info("--- Starting API Key Check ---")
+
     if flask_request.method == "OPTIONS":
         return True, None
 
     init_services_lightweight()
     if not db or FIRESTORE is None:
-        return False, ("Server not ready", 503)
+        logger.error("API Key Check failed: Firestore (db) is not initialized.")
+        return False, ("Server not ready to validate key", 503)
 
     api_key = flask_request.headers.get("x-api-key")
     if not api_key:
+        logger.warning("API Key Check failed: Header 'x-api-key' is missing.")
         return False, ("API key is missing.", 401)
 
-    key_ref = db.collection("api_keys").document(api_key)
-    today_str = datetime.date.today().isoformat()
+    logger.info(f"Found API key: ...{api_key[-4:]}")
 
-    def txn_logic(transaction):
-        snap = key_ref.get(transaction=transaction)
-        if not snap.exists:
-            raise ValueError("INVALID_KEY")
-        key_data = snap.to_dict() or {}
-        daily_limit = int(key_data.get("daily_limit", 50))
-        usage = int(key_data.get("usage", 0))
-        last_used_raw = key_data.get("last_used", "")
-        last_used = _normalize_last_used(last_used_raw)
-        if last_used < today_str:
-            usage = 0
-        if usage >= daily_limit:
-            raise ValueError("QUOTA_EXCEEDED")
-        transaction.update(key_ref, {
-            "usage": usage + 1,
-            "last_used": today_str
-        })
-        return True
+    key_ref = db.collection("api_keys").document(api_key)
+    today_str = date.today().isoformat()
 
     try:
-        db.run_transaction(txn_logic)
+        # create a transaction object
+        transaction = db.transaction()
+        # decorate the function for transactional execution (FIRESTORE is the module)
+        transactional_fn = FIRESTORE.transactional(_transactional_key_update)
+        # call the transactional function, passing the transaction object
+        transactional_fn(transaction, key_ref, today_str)
+
+        logger.info("--- API Key Check Successful ---")
         return True, None
-    except ValueError as ve:
-        v = str(ve)
-        if v == "INVALID_KEY":
-            return False, ("Invalid API key.", 403)
-        if v == "QUOTA_EXCEEDED":
-            return False, ("API quota for this key has been exceeded for today.", 429)
-        logger.exception("ValueError in transaction: %s", ve)
-        return False, ("Internal server error during quota check.", 500)
+
+    except google_exceptions.NotFound:
+        logger.warning(f"API Key not found in Firestore: ...{api_key[-4:]}")
+        return False, ("Invalid API key.", 403)
+
+    except ValueError as e:
+        logger.warning(f"Quota exceeded for key ...{api_key[-4:]}: {e}")
+        return False, (str(e), 429)
+
+    except google_exceptions.Aborted as e:
+        # Aborted can happen under contention; one retry attempt
+        logger.info("Transaction aborted, retrying once for key ...%s: %s", api_key[-4:], e)
+        try:
+            transaction = db.transaction()
+            transactional_fn(transaction, key_ref, today_str)
+            logger.info("Transaction retry successful for key ...%s", api_key[-4:])
+            return True, None
+        except Exception as e2:
+            logger.exception("Transaction retry failed for key ...%s: %s", api_key[-4:], e2)
+            return False, ("Internal server error during quota check.", 500)
+
     except Exception as e:
-        logger.exception("Error during quota transaction: %s", e)
+        logger.exception(f"CRITICAL UNEXPECTED ERROR during quota check for key ...{api_key[-4:]}: {e}")
         return False, ("Internal server error during quota check.", 500)
 
 # -----------------------
-# Model generation wrapper (method probing + timeout)
+# Robust model caller and chat handler
 # -----------------------
+
 def _generate_text_from_model(prompt):
+    """
+    Robust model caller: probe common SDK method names, apply timeout,
+    handle errors gracefully and return a simple string (or None).
+    """
+    global _model
     if _model is None:
+        logger.warning("_generate_text_from_model called but model is not initialized.")
         return None
 
     candidates = ("generate_content", "generate", "generate_text", "predict")
@@ -218,17 +274,18 @@ def _generate_text_from_model(prompt):
             if hasattr(_model, method):
                 fn = getattr(_model, method)
                 try:
+                    # Try both list and single-string signatures
                     try:
                         resp = fn([prompt])
                     except TypeError:
                         resp = fn(prompt)
+                    # Read common response shapes
                     if hasattr(resp, "text"):
                         return resp.text
                     if hasattr(resp, "result"):
                         return getattr(resp, "result")
                     return str(resp)
                 except Exception as inner:
-                    # debug-level log so we can inspect which candidate failed, without noisy stack each time
                     logger.debug("Model method %s raised: %s", method, inner)
                     continue
         logger.error("No working generation method found on model (tried: %s)", candidates)
@@ -239,12 +296,39 @@ def _generate_text_from_model(prompt):
         try:
             return fut.result(timeout=MODEL_CALL_TIMEOUT)
         except FuturesTimeoutError:
-            # timeout is expected sometimes; warn rather than exception to avoid noisy error-dumps
             logger.warning("Model call timed out after %s seconds", MODEL_CALL_TIMEOUT)
             return None
         except Exception as e:
             logger.exception("Unexpected error calling model: %s", e)
-            return None
+            return None 
+
+def _few_shot_for_tone(tone: str) -> str:
+    """Return a few-shot examples block for the requested tone."""
+    t = (tone or "empathy").lower()
+    if t == "short_advice":
+        return (
+            "\n\nEXAMPLES (Short Advice):\n"
+            "User: I'm overwhelmed with work and can't focus.\n"
+            "Aastha: Try a 10-minute break and one focused task. Which task feels smallest?\n\n"
+            "User: I can't sleep at night.\n"
+            "Aastha: Try a short wind-down (no screens) tonight. Want a breathing prompt?\n\n"
+        )
+    if t == "coaching":
+        return (
+            "\n\nEXAMPLES (Coaching):\n"
+            "User: I feel anxious about public speaking.\n"
+            "Aastha: That’s common — let’s break it down. What’s one small step you could practice today?\n\n"
+            "User: I want to make more friends but don't know where to start.\n"
+            "Aastha: Pick one low-pressure activity to try this week. What interests you most?\n\n"
+        )
+    # default: empathy
+    return (
+        "\n\nEXAMPLES (Empathy):\n"
+        "User: I'm feeling lonely and I don't have friends.\n"
+        "Aastha: I'm sorry you're feeling lonely — that must be hard. Would you like to tell me about a time you felt understood?\n\n"
+        "User: I get really nervous in groups.\n"
+        "Aastha: That makes sense; groups can feel intense. What's one small thing that feels okay during a social moment?\n\n"
+    )
 
 # -----------------------
 # Background memory summarization (best-effort)
@@ -256,7 +340,7 @@ def update_memory_summary_in_background(user_id, prev_memory, user_message, ai_r
         ensure_model()
         if _model is None or not db or FIRESTORE is None:
             logger.warning("Skipping memory update: model/firestore not available.")
-            return
+            return 
 
         summarization_prompt = (
             "You are a concise memory summarizer. From the PREVIOUS MEMORY and the LATEST EXCHANGE, "
@@ -270,7 +354,7 @@ def update_memory_summary_in_background(user_id, prev_memory, user_message, ai_r
         new_summary = _generate_text_from_model(summarization_prompt)
         if not new_summary:
             logger.warning("Memory summarization returned empty result.")
-            return
+            return 
 
         user_ref = db.collection("users").document(user_id)
         user_ref.set({
@@ -288,94 +372,146 @@ def update_memory_summary_in_background(user_id, prev_memory, user_message, ai_r
 def index():
     return "Sahara Backend is healthy.", 200
 
-@app.route("/chat", methods=["POST"])
+#Chat endpoint
+@app.route("/chat", methods=["POST", "OPTIONS"])
 def handle_chat():
-    init_services_lightweight()
+    # Allow preflight
+    if request.method == "OPTIONS":
+        return ("", 204)
 
-    if not check_and_update_global_quota():
-        return jsonify({"reply": "Aastha is resting. Please check back tomorrow."}), 503
-
+    # API key and quota check
     ok, info = require_api_key_and_quota(request)
     if not ok:
         msg, code = info
         return jsonify({"error": msg}), code
 
-    init_vertex_basic()
+    init_services_lightweight()
     ensure_model()
+
+    # Quick readiness checks
     if _model is None:
-        return jsonify({"reply": "AI Service not available."}), 503
+        return jsonify({"reply": "AI Service is currently unavailable."}), 503
+
+    if not check_and_update_global_quota():
+        return jsonify({"reply": "Aastha is resting. Please check back tomorrow."}), 503
 
     data = request.get_json(silent=True) or {}
-    user_message = data.get("message", "")
+    user_message = (data.get("message") or "").strip()
     user_id = data.get("userId")
     created_new_user = False
     memory_summary = ""
+    is_new_conversation = True  # default assumption
 
     if not user_id:
         user_id = str(uuid.uuid4())
         created_new_user = True
 
+    # Read user memory and last_active timestamp
     try:
         init_firestore()
         if db:
             user_ref = db.collection("users").document(user_id)
             user_doc = user_ref.get()
-            if not user_doc.exists:
-                user_ref.set({
-                    "created_at": FIRESTORE.SERVER_TIMESTAMP,
-                    "memory_summary": "",
-                    "conversation_count": 1
-                })
-                memory_summary = ""
-            else:
-                user_ref.set({
-                    "last_active": FIRESTORE.SERVER_TIMESTAMP,
-                    "conversation_count": FIRESTORE.Increment(1)
-                }, merge=True)
-                memory_summary = user_doc.to_dict().get("memory_summary", "")
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                memory_summary = user_data.get("memory_summary", "")
+                last_active_dt = user_data.get("last_active")
+
+                if last_active_dt:
+                    time_since_last_active = datetime.now(timezone.utc) - last_active_dt
+                    if time_since_last_active < timedelta(minutes=30):
+                        is_new_conversation = False
     except Exception as e:
-        logger.exception("Warning: Failed to access/update user doc for %s: %s", user_id, e)
+        logger.exception("Warning: Could not fetch user doc for %s: %s", user_id, e)
+
+    # Choose tone
+    requested_tone = (data.get("tone") or "").strip().lower()
+    if requested_tone not in ("empathy", "short_advice", "coaching"):
+        requested_tone = random.choice(["empathy", "short_advice", "coaching"])
+    few_shot = _few_shot_for_tone(requested_tone)
 
     system_prompt = (
-        "You are Aastha, a compassionate and warm AI companion. Keep replies concise (2-3 sentences) "
-        "using reflect-validate-question structure."
+        "You are Aastha — a warm, compassionate AI companion... Always reflect, validate, and ask one open question."
+        "**If the user says they don't understand or that their English isn't good, simplify your language,"
+        "use shorter sentences, and ask them to explain what is confusing.**"
     )
-    default_memory_text = "This is the user's first conversation."
-    context_prompt = f"REMEMBER THIS from past conversations: {memory_summary or default_memory_text}"
-    full_prompt = f"{system_prompt}\n\n{context_prompt}\n\nUser: {user_message}\nAastha:"
 
-    try:
-        ai_reply = _generate_text_from_model(full_prompt) or "Sorry, I couldn't respond right now."
+    # Build prompt based on session freshness - UPDATED LOGIC
+    default_memory_text = "This is the user's first conversation. Greet them warmly if appropriate."
+    context_prompt = f"PAST MEMORY: {memory_summary or default_memory_text}"
+    full_prompt = f"{system_prompt}\n{few_shot}\n{context_prompt}\n\nUser: {user_message}\nAastha:"
 
-        t = threading.Thread(
-            target=update_memory_summary_in_background,
-            args=(user_id, memory_summary, user_message, ai_reply),
-            daemon=True
+    # Call model
+    ai_reply = _generate_text_from_model(full_prompt)
+
+    payload = {}  # Initialize an empty payload dictionary
+
+    # ✅ --- START: CORRECTED LOGIC --- ✅
+    if ai_reply:
+        # SUCCESS PATH
+        payload["reply"] = ai_reply 
+
+        # Only inspect the user's message for suggestion keywords
+        user_text_lower = (user_message or "").lower()
+        for keyword, suggestion_data in SUGGESTION_MAP.items():
+            if keyword in user_text_lower:
+                payload["suggestion"] = suggestion_data
+                ai_reply += f"\n\n{suggestion_data['title']}. Would you like to add it to your Journey?"
+                payload["reply"] = ai_reply  # Update payload with appended text
+                break
+
+        # Launch background memory update
+        try:
+            threading.Thread(
+                target=update_memory_summary_in_background,
+                args=(user_id, memory_summary, user_message, ai_reply),
+                daemon=True
+            ).start()
+        except Exception:
+            logger.exception("Failed to start memory update thread for %s", user_id)
+
+    else:
+        # FAILURE PATH
+        fallback_reply = (
+            "Thank you for telling me that. I'm here for you. Would you like to tell me more about how that feels?"
         )
-        t.start()
+        payload["reply"] = fallback_reply
+        # No suggestion logic in failure path
+    # ✅ --- END: CORRECTED LOGIC --- ✅
 
-        payload = {"reply": ai_reply}
-        if created_new_user:
-            payload["userId"] = user_id
-        return jsonify(payload)
+    if created_new_user:
+        payload["userId"] = user_id
+
+    # Update Firestore user doc
+    try:
+        if db and FIRESTORE is not None:
+            user_ref = db.collection("users").document(user_id)
+            user_ref.set({
+                "last_active": FIRESTORE.SERVER_TIMESTAMP,
+                "conversation_count": FIRESTORE.Increment(1)
+            }, merge=True)
     except Exception as e:
-        logger.exception("Error handling chat: %s", e)
-        return jsonify({"reply": "I'm having a little trouble thinking right now."}), 500
+        logger.exception("Warning: Failed to update user doc post-chat for %s: %s", user_id, e)
+
+    return jsonify(payload)
 
 @app.route("/resources", methods=["GET"])
 def get_resources():
     init_firestore()
+
+    # --- ADD THIS CHECK ---
     ok, info = require_api_key_and_quota(request)
     if not ok:
         msg, code = info
         return jsonify({"error": msg}), code
+    # ----------------------
 
     if not db:
         return jsonify([]), 503
 
     limit = request.args.get("limit", default=100, type=int)
     try:
-        resources_ref = db.collection("resources").limit(limit)
+        resources_ref = db.collection("articles").limit(limit)
         docs = resources_ref.stream()
         resources = [{**doc.to_dict(), "id": doc.id} for doc in docs]
         return jsonify(resources)
@@ -386,12 +522,14 @@ def get_resources():
 @app.route("/resources/<resource_id>", methods=["GET"])
 def get_resource(resource_id):
     init_firestore()
+    #  # --- ADD THIS CHECK ---
     ok, info = require_api_key_and_quota(request)
     if not ok:
         msg, code = info
         return jsonify({"error": msg}), code
+    # # ----------------------
     try:
-        doc = db.collection("resources").document(resource_id).get()
+        doc = db.collection("articles").document(resource_id).get()
         if doc.exists:
             return jsonify({**doc.to_dict(), "id": doc.id})
         return jsonify({"error": "Resource not found"}), 404
@@ -402,16 +540,18 @@ def get_resource(resource_id):
 @app.route("/resources", methods=["POST"])
 def create_resource():
     init_firestore()
+        # # --- ADD THIS CHECK ---
     ok, info = require_api_key_and_quota(request)
     if not ok:
         msg, code = info
         return jsonify({"error": msg}), code
+    # # ----------------------
 
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Missing/invalid JSON body"}), 400
     try:
-        new_ref = db.collection("resources").document()
+        new_ref = db.collection("articles").document()
         new_ref.set(data)
         return jsonify({"id": new_ref.id, **data}), 201
     except Exception as e:
@@ -430,7 +570,7 @@ def update_resource(resource_id):
     if not data:
         return jsonify({"error": "Missing/invalid JSON body"}), 400
     try:
-        doc_ref = db.collection("resources").document(resource_id)
+        doc_ref = db.collection("articles").document(resource_id)
         if not doc_ref.get().exists:
             return jsonify({"error": "Resource not found"}), 404
         doc_ref.update(data)
@@ -442,27 +582,32 @@ def update_resource(resource_id):
 @app.route("/resources/<resource_id>", methods=["DELETE"])
 def delete_resource(resource_id):
     init_firestore()
+      # --- ADD THIS CHECK ---
     ok, info = require_api_key_and_quota(request)
     if not ok:
         msg, code = info
         return jsonify({"error": msg}), code
+    # ----------------------
+        
     try:
-        doc_ref = db.collection("resources").document(resource_id)
+        doc_ref = db.collection("articles").document(resource_id)
         if not doc_ref.get().exists:
             return jsonify({"error": "Resource not found"}), 404
         doc_ref.delete()
         return jsonify({"message": "Resource deleted"}), 200
     except Exception as e:
         logger.exception("Error deleting resource %s: %s", resource_id, e)
-        return jsonify({"error": "Could not delete resource"}), 500
+        return jsonify({"error": "Could not delete resource"}), 500 
 
 @app.route("/journal/sync", methods=["POST"])
 def handle_journal_sync():
     init_firestore()
+          # --- ADD THIS CHECK ---
     ok, info = require_api_key_and_quota(request)
     if not ok:
         msg, code = info
         return jsonify({"error": msg}), code
+    # ----------------------
 
     data = request.get_json(silent=True) or {}
     user_id = data.get("userId")
@@ -475,11 +620,192 @@ def handle_journal_sync():
         entry = {"text": entry}
 
     try:
-        db.collection("users").document(user_id).collection("entries").add(entry)
+        entry_payload = entry.copy() if isinstance(entry, dict) else {"text": str(entry)}
+        entry_payload["dateAdded"] = FIRESTORE.SERVER_TIMESTAMP
+        db.collection("users").document(user_id).collection("entries").add(entry_payload)
         return jsonify({"status": "success"}), 200
     except Exception as e:
         logger.exception("Error syncing journal: %s", e)
         return jsonify({"status": "error", "message": "Could not save entry"}), 500
+
+# In backend/app.py 
+@app.route("/users/<user_id>/journey", methods=["POST"])
+def add_journey_item(user_id):
+    """Adds a new action item to a user's journey. Returns the created document id."""
+    ok, info = require_api_key_and_quota(request)
+    if not ok:
+        msg, code = info
+        return jsonify({"error": msg}), code
+
+    data = request.get_json(silent=True)
+    if not data:
+        raw = request.get_data(as_text=True)
+        logger.warning("add_journey_item: Missing/invalid JSON body. Raw body: %s", raw)
+        return jsonify({"status": "error", "message": "Missing/invalid JSON body"}), 400
+
+    # Accept common client variations
+    title = data.get("title") or data.get("name")
+    resource_id = data.get("resource_id") or data.get("resourceId") or data.get("resource")
+    client_id = data.get("clientId") or data.get("client_id")  # optional idempotency key
+
+    if not title or not resource_id:
+        logger.warning("add_journey_item: Missing required fields. Received JSON: %s", data)
+        return jsonify({
+            "status": "error",
+            "message": "Missing required fields. Required: 'title' and 'resource_id' (or 'resourceId')."
+        }), 400
+
+    try:
+        journey_item = {
+            "title": title,
+            "description": data.get("description", ""),
+            "resourceId": resource_id,
+            "isCompleted": bool(data.get("isCompleted", False)),
+            "dateAdded": FIRESTORE.SERVER_TIMESTAMP
+        }
+
+        coll_ref = db.collection("users").document(user_id).collection("journey")
+
+        if client_id:
+            doc_ref = coll_ref.document(client_id)
+            if doc_ref.get().exists:
+                logger.info("add_journey_item: item with clientId %s already exists", client_id)
+                return jsonify({"status": "exists", "id": doc_ref.id}), 200
+            doc_ref.set(journey_item)
+            return jsonify({"status": "success", "id": doc_ref.id}), 201
+
+        # No client_id: use add() but handle different return shapes
+        add_result = coll_ref.add(journey_item)
+        doc_ref = None
+
+        if hasattr(add_result, "id"):
+            doc_ref = add_result
+        elif isinstance(add_result, (list, tuple)):
+            for part in add_result:
+                if hasattr(part, "id"):
+                    doc_ref = part
+                    break
+
+        if doc_ref is None:
+            logger.exception("add_journey_item: Could not determine DocumentReference from add() result: %s", add_result)
+            return jsonify({"status": "error", "message": "Created item but could not determine its id."}), 500
+
+        return jsonify({"status": "success", "id": doc_ref.id}), 201
+
+    except Exception as e:
+        logger.exception(f"Error adding journey item for user {user_id}: {e}")
+        return jsonify({"status": "error", "message": "Could not add item"}), 500
+
+@app.route("/users/<user_id>/journey", methods=["GET"])
+def get_journey_items(user_id):
+    """Retrieves all action items for a user's journey."""
+    init_firestore()
+    # Secure the endpoint
+    ok, info = require_api_key_and_quota(request)
+    if not ok:
+        msg, code = info
+        return jsonify({"error": msg}), code
+
+    try:                
+        journey_ref = db.collection("users").document(user_id).collection("journey").order_by("dateAdded", direction=firestore_module.Query.DESCENDING)
+        docs = journey_ref.stream()
+        items = [{**doc.to_dict(), "id": doc.id} for doc in docs]
+        return jsonify(items)
+    except Exception as e:
+        logger.exception(f"Error fetching journey for user {user_id}: {e}")
+        return jsonify([]), 500
+
+@app.route("/users/<user_id>/journey/<item_id>", methods=["PUT"])
+def update_journey_item(user_id, item_id):
+    init_firestore()
+
+    ok, info = require_api_key_and_quota(request)
+    if not ok:
+        msg, code = info
+        return jsonify({"error": msg}), code
+    data = request.get_json(silent=True) or {}
+    try:
+        doc_ref = db.collection("users").document(user_id).collection("journey").document(item_id)
+        if not doc_ref.get().exists:
+            return jsonify({"error": "Journey item not found"}), 404
+        doc_ref.update(data)
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        logger.exception("Error updating journey item: %s", e)
+        return jsonify({"error": "Could not update item"}), 500 
+
+@app.route("/users/<user_id>/entries", methods=["GET"])
+def get_journal_entries(user_id):
+    """Return all journal entries for a user (most-recent first)."""
+    init_firestore()
+    ok, info = require_api_key_and_quota(request)
+    if not ok:
+        msg, code = info
+        return jsonify({"error": msg}), code
+
+    try:
+        entries_ref = db.collection("users").document(user_id).collection("entries").order_by("dateAdded", direction=FIRESTORE.Query.DESCENDING)
+        docs = entries_ref.stream()
+        entries = [{**doc.to_dict(), "id": doc.id} for doc in docs]
+        return jsonify(entries), 200
+    except Exception as e:
+        logger.exception("Error fetching journal entries for %s: %s", user_id, e)
+        return jsonify([]), 500 
+
+@app.route("/users/<user_id>/entries/<entry_id>", methods=["PUT"])
+def update_journal_entry(user_id, entry_id):
+    init_firestore()
+    ok, info = require_api_key_and_quota(request)
+    if not ok:
+        msg, code = info
+        return jsonify({"error": msg}), code
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Missing/invalid JSON body"}), 400
+
+    try:
+        doc_ref = db.collection("users").document(user_id).collection("entries").document(entry_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return jsonify({"error": "Entry not found"}), 404 
+
+        # Only accept expected editable fields
+        update_payload = {}
+        for field in ("title", "body", "text"):
+            if field in data:
+                update_payload[field] = data[field]
+
+        # Optionally accept a client-provided date string, but don't trust it.
+        if "date" in data:
+            update_payload["date"] = data["date"]
+
+        # Add server-side last modification marker
+        update_payload["lastModified"] = FIRESTORE.SERVER_TIMESTAMP 
+
+        if not update_payload:
+            return jsonify({"status": "error", "message": "No editable fields provided."}), 400 
+
+        doc_ref.update(update_payload)
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        logger.exception("Error updating journal entry %s for user %s: %s", entry_id, user_id, e)
+        return jsonify({"status": "error", "message": "Could not update entry"}), 500  
+
+@app.route("/_debug_fire")
+def debug_fire():
+    try:
+        init_firestore()
+        import google.cloud.firestore
+        return jsonify({
+            "firestore_ok": bool(db),
+            "firestore_version": getattr(google.cloud.firestore, "__version__", "unknown"),
+            "api_keys_collection_path": str(db.collection("api_keys")) if db else None
+        })
+    except Exception as e:
+        import traceback
+        print("🔥 Error in /_debug_fire:", traceback.format_exc())
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500 
 
 @app.route("/_debug")
 def debug():

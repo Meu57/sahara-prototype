@@ -1,15 +1,19 @@
-// lib/screens/chat_screen.dart (FINAL, UPDATED VERSION)
-
+// lib/screens/chat_screen.dart
 import 'package:flutter/material.dart';
 import 'package:sahara_app/models/action_item.dart';
 import 'package:sahara_app/models/chat_message.dart';
 import 'package:sahara_app/services/api_service.dart';
-import 'package:sahara_app/services/database_service.dart';
 import 'package:sahara_app/services/session_service.dart';
+import 'package:sahara_app/screens/journal_entry_screen.dart';
 import 'package:sahara_app/widgets/chat_bubble.dart';
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  final String? completedTaskTitle;
+
+  const ChatScreen({
+    super.key,
+    this.completedTaskTitle,
+  });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -26,13 +30,70 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _addMessageToList(ChatMessage(text: 'Welcome to Sahara. How are you feeling today?', isUser: false));
+      if (widget.completedTaskTitle != null) {
+        _showSimulatedReply(widget.completedTaskTitle!);
+      } else {
+        _addMessageToList(
+            ChatMessage(text: 'Welcome to Sahara. How are you feeling today?', isUser: false));
+      }
     });
-
     _controller.addListener(() {
       setState(() {
         _canSendMessage = _controller.text.trim().isNotEmpty;
       });
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.completedTaskTitle != null &&
+        widget.completedTaskTitle != oldWidget.completedTaskTitle) {
+      _showSimulatedReply(widget.completedTaskTitle!);
+    }
+  }
+
+  void _showSimulatedReply(String taskTitle) {
+    final String simulatedReplyText =
+        "I see you just completed the '$taskTitle' exercise. That's a great step. How did it feel for you?";
+    final ChatMessage message = ChatMessage(
+      text: simulatedReplyText,
+      isUser: false,
+      journalEntryTitle: "Reflection on '$taskTitle'",
+      journalEntryPrefill: "I completed '$taskTitle' today. It felt...",
+    );
+    _addMessageToList(message);
+  }
+
+  // NEW: A handler for the journal prompt button
+  void _handleWriteInJournal(int index) {
+    final message = _messages[index];
+    if (message.journalPromptHandled) return;
+
+    // Immediately mark the prompt as handled to disable the button
+    setState(() {
+      _messages[index] = message.copyWith(journalPromptHandled: true);
+    });
+
+    // Navigate to the journal entry screen
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => JournalEntryScreen(
+          initialTitle: message.journalEntryTitle,
+          initialContent: message.journalEntryPrefill,
+        ),
+      ),
+    );
+  }
+
+  // ✅ NEW: Add a handler for the "No, thanks" button
+  void _handleJournalPromptRejected(int index) {
+    final message = _messages[index];
+    if (message.journalPromptHandled) return;
+
+    // Immediately mark the prompt as handled to disable both buttons
+    setState(() {
+      _messages[index] = message.copyWith(journalPromptHandled: true);
     });
   }
 
@@ -56,37 +117,29 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _getLiveAasthaResponse(String message) async {
-    final String userId = await SessionService().getUserId();
+    try {
+      final String userId = await SessionService().getUserId();
+      final response = await ApiService.sendMessage(message, userId: userId);
 
-    final String replyText = await ApiService.sendMessage(message, userId: userId);
+      final String replyText =
+          response['reply'] as String? ?? 'Sorry, no reply received.';
+      final suggestionData = response['suggestion'] as Map<String, dynamic>?;
 
-    if (!mounted) return;
+      if (!mounted) return;
+      setState(() => _isAasthaTyping = false);
 
-    setState(() => _isAasthaTyping = false);
-    _addMessageToList(ChatMessage(text: replyText, isUser: false));
+      ActionItem? suggestion;
+      if (suggestionData != null) {
+        suggestion = ActionItem.fromSuggestionJson(suggestionData);
+      }
 
-    if (replyText.toLowerCase().contains('stress') || message.toLowerCase().contains('stress')) {
-      await Future.delayed(const Duration(milliseconds: 1200));
-      if (mounted) _proposeJourneyAction();
-    }
-  }
-
-  Future<void> _proposeJourneyAction() async {
-    const suggestedTitle = 'Try a 5-minute breathing exercise';
-    final alreadyExists = await DatabaseService.instance.doesActionItemExist(suggestedTitle);
-
-    if (!alreadyExists && mounted) {
-      final suggestion = ActionItem(
-        title: suggestedTitle,
-        description: 'Find this in the Resource Library.',
-        dateAdded: DateTime.now(),
-      );
-
+      _addMessageToList(
+          ChatMessage(text: replyText, isUser: false, suggestion: suggestion));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isAasthaTyping = false);
       _addMessageToList(ChatMessage(
-        text: 'I noticed we are talking about feeling stressed. Sometimes a short breathing exercise can help. Would you like me to add one to your Journey?',
-        isUser: false,
-        suggestion: suggestion,
-      ));
+          text: "Sorry, I'm having trouble connecting.", isUser: false));
     }
   }
 
@@ -97,20 +150,79 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _showConfirmationSnackbar(String message) {
+  void _showAddedSnackbar() {
     final theme = Theme.of(context);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message, style: const TextStyle(color: Colors.black87)),
+        content: const Text('Activity added to your Journey.'),
         backgroundColor: theme.colorScheme.secondary,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)),
-        margin: const EdgeInsets.all(10.0),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _showDismissSnackbar() {
+    final theme = Theme.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Suggestion noted.'),
+        backgroundColor: theme.colorScheme.secondary,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _showErrorSnackbar() {
+    final theme = Theme.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Could not add item. Please try again.'),
+        backgroundColor: theme.colorScheme.error,
+        behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 3),
       ),
     );
   }
 
+  Future<void> _handleSuggestionAcceptedAtIndex(int index) async {
+    final message = _messages[index];
+    if (message.suggestion == null || message.suggestionHandled) return;
+
+    setState(() {
+      _messages[index] = message.copyWith(suggestionHandled: true);
+    });
+
+    try {
+      final userId = await SessionService().getUserId();
+      await ApiService.addJourneyItem(userId, message.suggestion!);
+
+      if (!mounted) return;
+      _showAddedSnackbar();
+
+      SessionService.journeyRefresh.value++;
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _messages[index] = message.copyWith(suggestionHandled: false);
+      });
+      _showErrorSnackbar();
+    }
+  }
+
+  void _handleSuggestionRejectedAtIndex(int index) {
+    final message = _messages[index];
+    if (message.suggestionHandled) return;
+
+    setState(() {
+      _messages[index] = message.copyWith(suggestionHandled: true);
+    });
+
+    _showDismissSnackbar();
+  }
+
+  // UPDATED: The _buildItem method
   Widget _buildItem(BuildContext context, int index, Animation<double> animation) {
     final message = _messages[index];
     final curvedAnimation = CurvedAnimation(parent: animation, curve: Curves.easeOutQuart);
@@ -123,9 +235,19 @@ class _ChatScreenState extends State<ChatScreen> {
           text: message.text,
           isUser: message.isUser,
           suggestion: message.suggestion,
-          onSuggestionAccepted: (actionTitle) {
-            _showConfirmationSnackbar('"$actionTitle" has been added to your Journey!');
-          },
+          suggestionHandled: message.suggestionHandled,
+          onSuggestionAccepted: (_) => _handleSuggestionAcceptedAtIndex(index),
+          onSuggestionRejected: () => _handleSuggestionRejectedAtIndex(index),
+
+          journalEntryTitle: message.journalEntryTitle,
+          journalEntryPrefill: message.journalEntryPrefill,
+
+          // UPDATED: Pass the new flag and the new handlers
+          journalPromptHandled: message.journalPromptHandled,
+          onWriteJournal: () => _handleWriteInJournal(index),
+
+          // ✅ NEW: Pass the new handler to the bubble
+          onJournalPromptRejected: () => _handleJournalPromptRejected(index),
         ),
       ),
     );

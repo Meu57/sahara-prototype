@@ -53,6 +53,7 @@ class DatabaseService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
         description TEXT NOT NULL,
+        resourceId TEXT NOT NULL,
         isCompleted INTEGER NOT NULL,
         dateAdded TEXT NOT NULL
       )
@@ -102,12 +103,14 @@ class DatabaseService {
 
     return List.generate(maps.length, (i) {
       return ActionItem(
-        id: maps[i]['id'],
-        title: maps[i]['title'],
-        description: maps[i]['description'],
-        isCompleted: maps[i]['isCompleted'] == 1, // Convert integer (0 or 1) back to boolean
-        dateAdded: DateTime.parse(maps[i]['dateAdded']),
-      );
+  id: maps[i]['id'],
+  title: maps[i]['title'],
+  description: maps[i]['description'],
+  resourceId: maps[i]['resourceId'] ?? '', 
+  isCompleted: maps[i]['isCompleted'] == 1,
+  dateAdded: DateTime.parse(maps[i]['dateAdded']),
+);
+
     });
   }
 
